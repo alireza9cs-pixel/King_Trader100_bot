@@ -110,7 +110,7 @@ async def get_signals(symbol="BTC/USDT:USDT", timeframe="15m"):
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
     await message.answer(
-        "سلام سلطان! 👑\n"
+        "سلام سیسی! 👑\n"
         "ربات تریدر با موفقیت فعال شد.\n\n"
         "برای تحلیل BTC دستور زیر را بفرست:\n"
         "/analyze"
