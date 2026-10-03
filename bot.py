@@ -1,28 +1,22 @@
 import os
 import asyncio
 import logging
-
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
 import ccxt.async_support as ccxt
 import pandas as pd
 
-
 logging.basicConfig(level=logging.INFO)
-
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN در Environment Variables تنظیم نشده است.")
 
-
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=GAPGPTMASKTOKENoaw1ceh37e9X0X
 dp = Dispatcher()
-
 
 exchange = ccxt.bingx({
     "enableRateLimit": True,
@@ -34,14 +28,11 @@ exchange = ccxt.bingx({
 
 def get_timeframe_keyboard():
     builder = InlineKeyboardBuilder()
-
     builder.button(text="⏱ 15 دقیقه", callback_data="tf_15m")
     builder.button(text="⏱ 1 ساعت", callback_data="tf_1h")
     builder.button(text="⏱ 4 ساعت", callback_data="tf_4h")
     builder.button(text="⏱ 1 روز", callback_data="tf_1d")
-
     builder.adjust(2, 2)
-
     return builder.as_markup()
 
 
@@ -49,377 +40,278 @@ def calculate_fibonacci(df):
     if len(df) < 5:
         return "📐 فیبوناچی: داده کافی نیست"
 
-    high_position = int(df["high"].to_numpy().argmax())
-    low_position = int(df["low"].to_numpy().argmin())
+    high_pos = int(df["high"].to_numpy().argmax())
+    low_pos = int(df["low"].to_numpy().argmin())
 
-    high_price = float(df["high"].iloc[high_position])
-    low_price = float(df["low"].iloc[low_position])
+    high_price = float(df["high"].iloc[high_pos])
+    low_price = float(df["low"].iloc[low_pos])
+    diff = high_price - low_price
 
-    difference = high_price - low_price
-
-    if difference <= 0:
+    if diff <= 0:
         return "📐 فیبوناچی: قابل محاسبه نیست"
 
-    if low_position < high_position:
+    if low_pos < high_pos:
         direction = "صعودی"
-
-        fib_236 = high_price - difference * 0.236
-        fib_382 = high_price - difference * 0.382
-        fib_500 = high_price - difference * 0.500
-        fib_618 = high_price - difference * 0.618
-        fib_786 = high_price - difference * 0.786
-
+        f236 = high_price - diff * 0.236
+        f382 = high_price - diff * 0.382
+        f500 = high_price - diff * 0.500
+        f618 = high_price - diff * 0.618
+        f786 = high_price - diff * 0.786
     else:
         direction = "نزولی"
-
-        fib_236 = low_price + difference * 0.236
-        fib_382 = low_price + difference * 0.382
-        fib_500 = low_price + difference * 0.500
-        fib_618 = low_price + difference * 0.618
-        fib_786 = low_price + difference * 0.786
+        f236 = low_price + diff * 0.236
+        f382 = low_price + diff * 0.382
+        f500 = low_price + diff * 0.500
+        f618 = low_price + diff * 0.618
+        f786 = low_price + diff * 0.786
 
     return (
-        f"📐 فیبوناچی حرکت {direction}\n"
-        f"0.236 : {fib_236:,.2f}\n"
-        f"0.382 : {fib_382:,.2f}\n"
-        f"0.500 : {fib_500:,.2f}\n"
-        f"0.618 : {fib_618:,.2f}\n"
-        f"0.786 : {fib_786:,.2f}"
+        f"📐 فیبوناچی ({direction})\n"
+        f"0.236: {f236:,.2f} | 0.382: {f382:,.2f}\n"
+        f"0.500: {f500:,.2f} | 0.618: {f618:,.2f}\n"
+        f"0.786: {f786:,.2f}"
     )
 
 
 def calculate_macd(df):
     close = df["close"].astype(float)
-
     ema_12 = close.ewm(span=12, adjust=False).mean()
     ema_26 = close.ewm(span=26, adjust=False).mean()
-
     macd_line = ema_12 - ema_26
     signal_line = macd_line.ewm(span=9, adjust=False).mean()
-    histogram = macd_line - signal_line
+    hist = macd_line - signal_line
 
-    macd_value = float(macd_line.iloc[-1])
-    signal_value = float(signal_line.iloc[-1])
-    histogram_value = float(histogram.iloc[-1])
+    m_val = float(macd_line.iloc[-1])
+    s_val = float(signal_line.iloc[-1])
+    h_val = float(hist.iloc[-1])
 
-    if macd_value > signal_value:
+    if m_val > s_val:
         status = "🟢 صعودی"
-    elif macd_value < signal_value:
+    elif m_val < s_val:
         status = "🔴 نزولی"
     else:
         status = "⚪️ خنثی"
 
-    return (
-        f"📉 MACD\n"
-        f"خط MACD: {macd_value:.4f}\n"
-        f"خط Signal: {signal_value:.4f}\n"
-        f"Histogram: {histogram_value:.4f}\n"
-        f"وضعیت: {status}"
-    )
+    return f"📉 MACD: {m_val:.2f} | Signal: {s_val:.2f} ({status})"
 
 
 def find_order_block(df, bullish):
-    start_index = max(0, len(df) - 30)
-
-    for i in range(len(df) - 2, start_index - 1, -1):
-        open_price = float(df["open"].iloc[i])
-        close_price = float(df["close"].iloc[i])
-        low_price = float(df["low"].iloc[i])
-        high_price = float(df["high"].iloc[i])
-
-        if bullish and close_price < open_price:
-            return f"{low_price:,.2f} تا {high_price:,.2f}"
-
-        if not bullish and close_price > open_price:
-            return f"{low_price:,.2f} تا {high_price:,.2f}"
-
-    return "پیدا نشد"
+    start = max(0, len(df) - 25)
+    for i in range(len(df) - 2, start - 1, -1):
+        o = float(df["open"].iloc[i])
+        c = float(df["close"].iloc[i])
+        l = float(df["low"].iloc[i])
+        h = float(df["high"].iloc[i])
+        if bullish and c < o:
+            return f"{l:,.2f} - {h:,.2f}"
+        if not bullish and c > o:
+            return f"{l:,.2f} - {h:,.2f}"
+    return "نامشخص"
 
 
-def find_fair_value_gap(df):
+def find_fvg(df):
     for i in range(len(df) - 1, 1, -1):
-        candle_two_high = float(df["high"].iloc[i - 2])
-        candle_two_low = float(df["low"].iloc[i - 2])
+        c2_h = float(df["high"].iloc[i - 2])
+        c2_l = float(df["low"].iloc[i - 2])
+        c_h = float(df["high"].iloc[i])
+        c_l = float(df["low"].iloc[i])
 
-        current_high = float(df["high"].iloc[i])
-        current_low = float(df["low"].iloc[i])
-
-        # FVG صعودی
-        if current_low > candle_two_high:
-            return (
-                f"🟢 صعودی: "
-                f"{candle_two_high:,.2f} تا {current_low:,.2f}"
-            )
-
-        # FVG نزولی
-        if current_high < candle_two_low:
-            return (
-                f"🔴 نزولی: "
-                f"{current_high:,.2f} تا {candle_two_low:,.2f}"
-            )
-
-    return "پیدا نشد"
+        if c_l > c2_h:
+            return f"🟢 صعودی ({c2_h:,.2f} تا {c_l:,.2f})"
+        if c_h < c2_l:
+            return f"🔴 نزولی ({c_h:,.2f} تا {c2_l:,.2f})"
+    return "ندارد"
 
 
 def calculate_smart_money(df):
     if len(df) < 20:
-        return (
-            "🧠 Smart Money / SMC\n"
-            "داده کافی برای تشخیص ساختار بازار وجود ندارد."
-        )
+        return "🧠 SMC: داده کافی نیست"
 
-    current_close = float(df["close"].iloc[-1])
+    c_close = float(df["close"].iloc[-1])
+    s_highs = []
+    s_lows = []
 
-    swing_highs = []
-    swing_lows = []
+    for i in range(3, len(df) - 3):
+        h = float(df["high"].iloc[i])
+        l = float(df["low"].iloc[i])
+        if h >= df["high"].iloc[i-3:i].max() and h >= df["high"].iloc[i+1:i+4].max():
+            s_highs.append(h)
+        if l <= df["low"].iloc[i-3:i].min() and l <= df["low"].iloc[i+1:i+4].min():
+            s_lows.append(l)
 
-    window = 3
-
-    for i in range(window, len(df) - window):
-        current_high = float(df["high"].iloc[i])
-        current_low = float(df["low"].iloc[i])
-
-        left_highs = df["high"].iloc[i - window:i]
-        right_highs = df["high"].iloc[i + 1:i + window + 1]
-
-        left_lows = df["low"].iloc[i - window:i]
-        right_lows = df["low"].iloc[i + 1:i + window + 1]
-
-        if current_high >= left_highs.max() and current_high >= right_highs.max():
-            swing_highs.append(i)
-
-        if current_low <= left_lows.min() and current_low <= right_lows.min():
-            swing_lows.append(i)
-
-    structure = "⚪️ رنج یا بدون شکست مشخص"
+    structure = "⚪️ رنج"
     bullish_structure = False
     bearish_structure = False
 
-    if swing_highs:
-        last_swing_high = swing_highs[-1]
-        swing_high_price = float(df["high"].iloc[last_swing_high])
+    if s_highs and c_close > s_highs[-1]:
+        structure = "🟢 شکست سقف (Bullish BOS)"
+        bullish_structure = True
+    elif s_lows and c_close < s_lows[-1]:
+        structure = "🔴 شکست کف (Bearish BOS)"
+        bearish_structure = True
 
-        if current_close > swing_high_price:
-            structure = "🟢 شکست ساختار صعودی - Bullish BOS"
-            bullish_structure = True
+    p_high = float(df["high"].iloc[-21:-1].max())
+    p_low = float(df["low"].iloc[-21:-1].min())
+    l_high = float(df["high"].iloc[-1])
+    l_low = float(df["low"].iloc[-1])
 
-    if swing_lows:
-        last_swing_low = swing_lows[-1]
-        swing_low_price = float(df["low"].iloc[last_swing_low])
-
-        if current_close < swing_low_price:
-            structure = "🔴 شکست ساختار نزولی - Bearish BOS"
-            bearish_structure = True
-
-    lookback = min(20, len(df) - 1)
-
-    previous_high = float(
-        df["high"].iloc[-lookback - 1:-1].max()
-    )
-
-    previous_low = float(
-        df["low"].iloc[-lookback - 1:-1].min()
-    )
-
-    last_high = float(df["high"].iloc[-1])
-    last_low = float(df["low"].iloc[-1])
-
-    if last_high > previous_high and current_close < previous_high:
-        liquidity = "🔴 جمع‌آوری نقدینگی بالای سقف"
-    elif last_low < previous_low and current_close > previous_low:
-        liquidity = "🟢 جمع‌آوری نقدینگی پایین کف"
+    if l_high > p_high and c_close < p_high:
+        liq = "🔴 شکار نقدینگی بالای سقف"
+    elif l_low < p_low and c_close > p_low:
+        liq = "🟢 شکار نقدینگی کف"
     else:
-        liquidity = "⚪️ نقدینگی مشخصی شکار نشده است"
+        liq = "⚪️ نقدینگی شکار نشده"
 
-    if bullish_structure:
-        order_block_zone = find_order_block(df, bullish=True)
-    elif bearish_structure:
-        order_block_zone = find_order_block(df, bullish=False)
-    else:
-        order_block_zone = "با ساختار فعلی مشخص نیست"
-
-    fvg = find_fair_value_gap(df)
+    ob = find_order_block(df, bullish=bullish_structure or not bearish_structure)
+    fvg = find_fvg(df)
 
     return (
-        f"🧠 Smart Money / SMC\n"
-        f"🏗 ساختار بازار: {structure}\n"
-        f"💧 نقدینگی: {liquidity}\n"
-        f"🧱 Order Block: {order_block_zone}\n"
-        f"🕳 FVG: {fvg}"
+        f"🧠 Smart Money (SMC)\n"
+        f"• ساختار: {structure}\n"
+        f"• نقدینگی: {liq}\n"
+        f"• اوردربلاک (OB): {ob}\n"
+        f"• گپ ارزش (FVG): {fvg}"
     )
 
 
 def calculate_amd(df):
-    if len(df) < 30:
-        return (
-            "🔄 AMD\n"
-            "داده کافی برای تشخیص Accumulation، Manipulation و Distribution نیست."
-        )
+    if len(df) < 25:
+        return "🔄 AMD: داده کافی نیست"
 
-    current_close = float(df["close"].iloc[-1])
-    current_volume = float(df["volume"].iloc[-1])
+    c_close = float(df["close"].iloc[-1])
+    c_vol = float(df["volume"].iloc[-1])
+    p_high = float(df["high"].iloc[-21:-1].max())
+    p_low = float(df["low"].iloc[-21:-1].min())
+    avg_vol = float(df["volume"].iloc[-20:-1].mean())
 
-    previous_high = float(df["high"].iloc[-21:-1].max())
-    previous_low = float(df["low"].iloc[-21:-1].min())
+    if float(df["high"].iloc[-1]) > p_high and c_close < p_high:
+        phase = "🔴 Manipulation (دستکاری نزولی)"
+    elif float(df["low"].iloc[-1]) < p_low and c_close > p_low:
+        phase = "🟢 Manipulation (دستکاری صعودی)"
+    elif c_close > p_high and c_vol > avg_vol * 1.2:
+        phase = "🟢 Distribution (پخش صعودی)"
+    elif c_close < p_low and c_vol > avg_vol * 1.2:
+        phase = "🔴 Distribution (پخش نزولی)"
+    else:
+        phase = "⚪️ Accumulation (تجمع و آماده‌سازی)"
 
-    average_volume = float(df["volume"].iloc[-20:-1].mean())
-
-    recent_range = (
-        float(df["high"].iloc[-10:].max())
-        - float(df["low"].iloc[-10:].min())
-    )
-
-    previous_range = (
-        float(df["high"].iloc[-20:-10].max())
-        - float(df["low"].iloc[-20:-10].min())
-    )
-
-    # مرحله Manipulation؛ شکار نقدینگی و برگشت به داخل محدوده
-    if (
-        float(df["high"].iloc[-1]) > previous_high
-        and current_close < previous_high
-    ):
-        return (
-            "🔄 AMD\n"
-            "مرحله احتمالی: 🔴 Manipulation نزولی\n"
-            "قیمت بالای محدوده را لمس کرده و دوباره پایین‌تر بسته شده است."
-        )
-
-    if (
-        float(df["low"].iloc[-1]) < previous_low
-        and current_close > previous_low
-    ):
-        return (
-            "🔄 AMD\n"
-            "مرحله احتمالی: 🟢 Manipulation صعودی\n"
-            "قیمت پایین محدوده را لمس کرده و دوباره بالاتر بسته شده است."
-        )
-
-    # مرحله Distribution؛ شکست محدوده همراه با حجم بالاتر
-    if (
-        current_close > previous_high
-        and current_volume > average_volume * 1.2
-    ):
-        return (
-            "🔄 AMD\n"
-            "مرحله احتمالی: 🟢 Distribution صعودی\n"
-            "شکست سقف محدوده با حجم نسبتاً بالا دیده می‌شود."
-        )
-
-    if (
-        current_close < previous_low
-        and current_volume > average_volume * 1.2
-    ):
-        return (
-            "🔄 AMD\n"
-            "مرحله احتمالی: 🔴 Distribution نزولی\n"
-            "شکست کف محدوده با حجم نسبتاً بالا دیده می‌شود."
-        )
-
-    # مرحله Accumulation؛ فشرده‌شدن محدوده
-    if previous_range > 0 and recent_range < previous_range * 0.75:
-        return (
-            "🔄 AMD\n"
-            "مرحله احتمالی: ⚪️ Accumulation\n"
-            "نوسان قیمت در حال فشرده‌شدن و بازار در حالت جمع‌آوری است."
-        )
-
-    return (
-        "🔄 AMD\n"
-        "مرحله فعلی: ⚪️ نامشخص یا انتقالی\n"
-        "برای تشخیص واضح‌تر، باید حرکت بعدی قیمت تأیید شود."
-    )
+    return f"🔄 چرخه ICT/AMD: {phase}"
 
 
 async def get_signals(symbol="BTC/USDT:USDT", timeframe="15m"):
     try:
-        ohlcv = await exchange.fetch_ohlcv(
-            symbol,
-            timeframe,
-            limit=100
-        )
-
+        ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=100)
         if not ohlcv:
             return "داده‌ای از صرافی دریافت نشد."
 
-        df = pd.DataFrame(
-            ohlcv,
-            columns=[
-                "timestamp",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume"
-            ]
-        )
-
-        numeric_columns = [
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume"
-        ]
-
-        for column in numeric_columns:
-            df[column] = pd.to_numeric(df[column], errors="coerce")
-
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        for col in ["open", "high", "low", "close", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df.dropna().reset_index(drop=True)
 
         if len(df) < 30:
             return "داده کافی برای تحلیل دریافت نشد."
 
-        # محاسبه RSI
+        # RSI
         delta = df["close"].diff()
-
         gain = delta.where(delta > 0, 0).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-
         rs = gain / loss.replace(0, float("nan"))
         df["rsi"] = 100 - (100 / (1 + rs))
 
         last_rsi = df["rsi"].iloc[-1]
+        rsi_text = f"{float(last_rsi):.2f}" if not pd.isna(last_rsi) else "نامشخص"
 
-        if pd.isna(last_rsi):
-            rsi_text = "نامشخص"
-            rsi_status = "⚪️ اطلاعات کافی نیست"
+        # POC
+        p_min = float(df["close"].min())
+        p_max = float(df["close"].max())
+        if p_min == p_max:
+            poc_price = p_min
         else:
-            rsi_text = f"{float(last_rsi):.2f}"
+            df["bin"] = pd.cut(df["close"], bins=20, duplicates="drop")
+            prof = df.groupby("bin", observed=False)["volume"].sum().dropna()
+            poc_bin = prof.idxmax()
+            poc_price = (poc_bin.left + poc_bin.right) / 2
 
-            if last_rsi < 30:
-                rsi_status = "🟢 اشباع فروش"
-            elif last_rsi > 70:
-                rsi_status = "🔴 اشباع خرید"
-            else:
-                rsi_status = "⚪️ محدوده خنثی"
+        current_price = float(df["close"].iloc[-1])
 
-        # محاسبه POC
-        price_min = float(df["close"].min())
-        price_max = float(df["close"].max())
+        macd_res = calculate_macd(df)
+        fib_res = calculate_fibonacci(df)
+        smc_res = calculate_smart_money(df)
+        amd_res = calculate_amd(df)
 
-        if price_min == price_max:
-            poc_price = price_min
-        else:
-            df["price_bin"] = pd.cut(
-                df["close"],
-                bins=20,
-                duplicates="drop"
-            )
+        return (
+            f"📊 تحلیل جامع بیت‌کوین\n"
+            f"⏱ تایم‌فریم: {timeframe}\n"
+            f"─────────────────\n"
+            f"💰 قیمت فعلی: {current_price:,.2f}$\n"
+            f"🎯 مرکز حجم (POC): {poc_price:,.2f}$\n"
+            f"📈 RSI: {rsi_text}\n"
+            f"─────────────────\n"
+            f"{macd_res}\n"
+            f"─────────────────\n"
+            f"{fib_res}\n"
+            f"─────────────────\n"
+            f"{smc_res}\n"
+            f"─────────────────\n"
+            f"{amd_res}\n"
+            f"─────────────────\n"
+            f"⚠️ تحلیل‌ها جنبه الگوریتمی دارند و توصیه مالی نیستند."
+        )
 
-            profile = (
-                df.groupby(
-                    "price_bin",
-                    observed=False
-                )["volume"]
-                .sum()
-                .dropna()
-            )
+    except Exception as error:
+        logging.exception("Analysis error")
+        return f"خطا در تحلیل: {str(error)}"
 
-            if profile.empty:
-                poc_price = float(df["close"].iloc[-1])
-            else:
-                poc_bin = profile.idxmax()
-                poc_price = (poc_bin.left + poc_bin.right) / 2
 
-        current
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer(
+        "سلام! به ربات King Trader خوش آمدید 👑\n\nتایم‌فریم را انتخاب کنید:",
+        reply_markup=get_timeframe_keyboard()
+    )
+
+
+@dp.message(Command("analyze"))
+async def cmd_analyze(message: types.Message):
+    await message.answer(
+        "تایم‌فریم مورد نظر را انتخاب کنید:",
+        reply_markup=get_timeframe_keyboard()
+    )
+
+
+@dp.callback_query(F.data.startswith("tf_"))
+async def handle_timeframe(callback: types.CallbackQuery):
+    timeframe = callback.data.replace("tf_", "")
+    await callback.answer("در حال تحلیل...")
+    await callback.message.edit_text("⏳ در حال دریافت دیتا و محاسبات...")
+    result = await get_signals(timeframe=timeframe)
+    await callback.message.edit_text(result, reply_markup=get_timeframe_keyboard())
+
+
+async def health_check(request):
+    return web.Response(text="Bot is running!")
+
+
+async def main():
+    port = int(os.getenv("PORT", "8080"))
+    app = web.Application()
+    app.router.add_get("/", health_check)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    logging.info(f"Health check running on port {port}")
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await runner.cleanup()
+        await exchange.close()
+        await bot.session.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
