@@ -11,7 +11,7 @@ import numpy as np
 
 logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=GAPGPTMASKTOKEN24i6am98kt9jX0X
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 exchange = ccxt.bingx({
@@ -19,7 +19,6 @@ exchange = ccxt.bingx({
     'options': {'defaultType': 'swap'}
 })
 
-# ساخت کیبورد تایم‌فریم‌ها
 def get_timeframe_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="⏱ 15 دقیقه", callback_data="tf_15m")
@@ -29,40 +28,36 @@ def get_timeframe_keyboard():
     builder.adjust(2, 2)
     return builder.as_markup()
 
-# تابع تحلیل والیوم پروفایل و RSI
 async def get_signals(symbol="BTC/USDT:USDT", timeframe="15m"):
     try:
         ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=100)
         if not ohlcv:
             return "داده‌ای از صرافی دریافت نشد."
-        
+
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        
-        # محاسبه RSI
+
         delta = df['close'].diff()
         gain = delta.where(delta > 0, 0).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / loss.replace(0, float("nan"))
         df['rsi'] = 100 - (100 / (1 + rs))
-        
-        # محاسبه Volume Profile (POC)
+
         bins = 20
         df['bin'] = pd.cut(df['close'], bins=bins)
         profile = df.groupby('bin', observed=False)['volume'].sum()
         poc_bin = profile.idxmax()
         poc_price = (poc_bin.left + poc_bin.right) / 2
-        
+
         current_price = float(df['close'].iloc[-1])
         last_rsi = float(df['rsi'].iloc[-1])
-        
-        # وضعیت بازار بر اساس RSI
+
         if last_rsi < 30:
             status = "🟢 اشباع فروش (احتمال صعود)"
         elif last_rsi > 70:
             status = "🔴 اشباع خرید (احتمال اصلاح)"
         else:
             status = "⚪️ محدوده خنثی"
-            
+
         return (
             f"📊 تحلیل جفت‌ارز: {symbol}\n"
             f"⏱ تایم‌فریم: {timeframe}\n"
@@ -78,7 +73,6 @@ async def get_signals(symbol="BTC/USDT:USDT", timeframe="15m"):
         logging.exception("Error in analysis")
         return f"خطا در تحلیل: {str(e)}"
 
-# دستور استارت
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
@@ -87,7 +81,6 @@ async def cmd_start(message: types.Message):
         reply_markup=get_timeframe_keyboard()
     )
 
-# دستور تحلیل مستقیم
 @dp.message(Command("analyze"))
 async def cmd_analyze(message: types.Message):
     await message.answer(
@@ -95,17 +88,14 @@ async def cmd_analyze(message: types.Message):
         reply_markup=get_timeframe_keyboard()
     )
 
-# دریافت کلیک روی دکمه‌های تایم‌فریم
 @dp.callback_query(F.data.startswith("tf_"))
 async def handle_timeframe(callback: types.CallbackQuery):
     tf = callback.data.replace("tf_", "")
     await callback.answer("در حال دریافت اطلاعات بازار...")
     await callback.message.edit_text("⏳ در حال تحلیل بازار... لطفاً چند ثانیه صبر کنید.")
-    
     result = await get_signals(timeframe=tf)
     await callback.message.edit_text(result, reply_markup=get_timeframe_keyboard())
 
-# سرور وب برای Render
 async def handle(request):
     return web.Response(text="Bot is running!")
 
@@ -117,7 +107,6 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
