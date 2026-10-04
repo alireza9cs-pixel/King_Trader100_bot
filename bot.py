@@ -8,15 +8,14 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# تنظیمات لاگینگ برای دیباگ بهتر در صورت بروز خطا
 logging.basicConfig(level=logging.INFO)
 
-# خواندن توکن از محیط (رندر) - این خط رو تغییر نده
 TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=TOKEN)
+bot = Bot(token=GAPGPTMASKTOKEN6h0xs50qw7uX0X
 dp = Dispatcher()
 
-exchange = ccxt.mexc({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
+# تغییر صرافی به Bybit
+exchange = ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
 
 def get_symbols_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -31,7 +30,6 @@ def get_timeframe_keyboard(symbol):
         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="back_symbols")]
     ])
 
-# توابع محاسباتی
 def calculate_rsi(df, period=14):
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -48,38 +46,31 @@ def calculate_macd(df, fast=12, slow=26, signal=9):
 
 async def analyze_market(symbol: str, timeframe: str):
     try:
+        # دریافت داده از بای‌بیت
         ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=100)
-        if not ohlcv: return "❌ خطا: داده‌ای دریافت نشد.", None
+        if not ohlcv: return "❌ خطا: ارز یافت نشد یا داده‌ای ندارد.", None
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
         last = df.iloc[-1]
         high_24h = df['high'].max()
         low_24h = df['low'].min()
         
-        # فنی
         rsi = calculate_rsi(df).iloc[-1]
         macd, sig = calculate_macd(df)
         
-        # POC
         df['price_bin'] = pd.cut(df['close'], bins=10)
         poc = df.groupby('price_bin', observed=False)['volume'].sum().idxmax()
         poc_price = (poc.left + poc.right) / 2
 
-        # SMC / ICT
         fvg = "✅ فعال" if last['low'] > df['high'].iloc[-3] else "❌ غیرفعال"
         ob = f"{df['low'].tail(5).min():.4f} - {df['high'].tail(5).max():.4f}"
         
-        # AMD & Price Action
         range_size = high_24h - low_24h
         amd = "Accumulation (انباشت)" if last['close'] < (low_24h + range_size*0.2) else "Distribution (توزیع)"
         
-        # فیبو
         fib_0618 = high_24h - (0.618 * (high_24h - low_24h))
-        
-        # نظر کلی
         sentiment = "🟢 صعودی (Bullish)" if rsi > 50 and macd > sig else "🔴 نزولی (Bearish)"
         
-        # سیگنال
         sl = last['close'] * 0.98 if sentiment == "🟢 صعودی (Bullish)" else last['close'] * 1.02
         tp1 = last['close'] * 1.01 if sentiment == "🟢 صعودی (Bullish)" else last['close'] * 0.99
         tp2 = last['close'] * 1.02 if sentiment == "🟢 صعودی (Bullish)" else last['close'] * 0.98
@@ -111,7 +102,17 @@ async def analyze_market(symbol: str, timeframe: str):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("سلام! برای شروع تحلیل، ارز رو انتخاب کن:", reply_markup=get_symbols_keyboard())
+    await message.answer("سلام! ارز مورد نظر رو انتخاب کن یا اسمش رو بنویس (مثلا ADA):", reply_markup=get_symbols_keyboard())
+
+# هندلر برای سرچ کردن ارز
+@dp.message()
+async def handle_search(message: types.Message):
+    symbol_input = message.text.upper()
+    if "/" not in symbol_input:
+        symbol_input += "/USDT"
+    
+    # تست ساده برای اینکه بفهمیم ارزه
+    await message.answer(f"جفت‌ارز `{symbol_input}` انتخاب شد. تایم‌فریم رو انتخاب کن:", reply_markup=get_timeframe_keyboard(symbol_input))
 
 @dp.callback_query()
 async def callback_handler(callback: types.CallbackQuery):
