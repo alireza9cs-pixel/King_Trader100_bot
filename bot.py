@@ -13,9 +13,9 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN در Environment Variables تنظیم نشده است.")
+    raise RuntimeError("BOT_TOKEN تنظیم نشده است.")
 
-bot = Bot(token=GAPGPTMASKTOKENoaw1ceh37e9X0X
+bot = Bot(token=GAPGPTMASKTOKEN7qxtl1e7rcoX0X
 dp = Dispatcher()
 
 exchange = ccxt.bingx({
@@ -83,7 +83,6 @@ def calculate_macd(df):
 
     m_val = float(macd_line.iloc[-1])
     s_val = float(signal_line.iloc[-1])
-    h_val = float(hist.iloc[-1])
 
     if m_val > s_val:
         status = "🟢 صعودی"
