@@ -26,7 +26,7 @@ from aiogram.enums import ParseMode
 logging.basicConfig(level=logging.INFO)
 
 # توکن ربات از متغیر محیطی خوانده می‌شود
-GAPGPTMASKTOKENly7zegpwh8iX0X = os.getenv("GAPGPTMASKTOKENly7zegpwh8iX1X", "").strip()
+GAPGPTMASKTOKENeg5d8w78eyX0X = os.getenv("GAPGPTMASKTOKENeg5d8w78eyX1X", "").strip()
 
 # صرافی MEXC برای قراردادهای فیوچرز
 exchange = ccxt.mexc({
@@ -38,7 +38,6 @@ exchange = ccxt.mexc({
 })
 
 dp = Dispatcher()
-
 
 def get_symbols_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -69,7 +68,6 @@ def get_symbols_keyboard():
             )
         ]
     ])
-
 
 def get_timeframe_keyboard(symbol):
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -115,7 +113,6 @@ def get_timeframe_keyboard(symbol):
         ]
     ])
 
-
 def format_price(price):
     """فرمت هوشمند قیمت برای جلوگیری از صفر شدن میم‌کوین‌ها"""
     if price is None or price == "-":
@@ -137,7 +134,6 @@ def format_price(price):
 
     except Exception:
         return str(price)
-
 
 # ----------------- ماژول چارت والیوم پروفایل -----------------
 
@@ -1078,4 +1074,131 @@ def split_signal_reports(reports, max_length=3900):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
-        "سلام! به ربات تحلیل تکنیکال 
+        "سلام! به ربات تحلیل تکنیکال خوش آمدید.\n"
+        "ارز مورد نظر خود را برای تحلیل انتخاب کنید:",
+        reply_markup=get_symbols_keyboard()
+    )
+
+
+@dp.callback_query(lambda c: c.data.startswith('sym:'))
+async def process_symbol_select(callback_query: types.CallbackQuery):
+    symbol = callback_query.data.split('sym:')[1]
+
+    await callback_query.message.edit_text(
+        f"ارز انتخابی: <b>{symbol}</b>\n"
+        "لطفاً تایم‌فریم یا ابزار مورد نظر را انتخاب کنید:",
+        reply_markup=get_timeframe_keyboard(symbol)
+    )
+    await callback_query.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith('tf:'))
+async def process_timeframe_select(callback_query: types.CallbackQuery):
+    await callback_query.answer()
+
+    data_str = callback_query.data[3:]
+    symbol, tf = data_str.rsplit(':', 1)
+
+    await callback_query.message.edit_text(
+        "⏳ در حال دریافت داده‌ها و تحلیل هوشمند... لطفاً شکیبا باشید."
+    )
+
+    result = await analyze_market(symbol, tf)
+
+    await callback_query.message.edit_text(
+        result,
+        reply_markup=get_timeframe_keyboard(symbol)
+    )
+
+
+@dp.callback_query(lambda c: c.data.startswith('vp:'))
+async def process_volume_profile(callback_query: types.CallbackQuery):
+    await callback_query.answer("در حال آماده‌سازی تصویر...")
+
+    data_str = callback_query.data[3:]
+    symbol, tf = data_str.rsplit(':', 1)
+
+    wait_msg = await callback_query.message.answer(
+        "⏳ در حال پردازش داده‌های حجم و تولید چارت..."
+    )
+
+    buf, caption = await generate_volume_profile_chart(symbol, tf)
+    await wait_msg.delete()
+
+    if buf:
+        photo = BufferedInputFile(
+            buf.getvalue(),
+            filename=f"vp_{symbol.replace('/', '_')}.png"
+        )
+        await callback_query.message.answer_photo(
+            photo=photo,
+            caption=caption
+        )
+    else:
+        await callback_query.message.answer(caption)
+
+
+@dp.callback_query(lambda c: c.data == 'back_to_symbols')
+async def process_back(callback_query: types.CallbackQuery):
+    await callback_query.answer()
+    await callback_query.message.edit_text(
+        "ارز مورد نظر خود را برای تحلیل انتخاب کنید:",
+        reply_markup=get_symbols_keyboard()
+    )
+
+
+# =========================================================
+# هندلر دکمه سیگنال اتوماتیک
+# =========================================================
+
+@dp.callback_query(lambda c: c.data == "auto_signal")
+async def process_auto_signal(callback_query: types.CallbackQuery):
+    await callback_query.answer("اسکن ۱۰۰ ارز برتر بازار آغاز شد...")
+
+    await callback_query.message.edit_text(
+        "⚡️ <b>در حال اسکن ۱۰۰ ارز پرحجم و برتر MEXC...</b>\n\n"
+        "⏱ تایم‌فریم‌ها: 15m , 1h , 4h\n"
+        "⏳ لطفاً حدود ۳۰ الی ۴۰ ثانیه شکیبا باشید..."
+    )
+
+    try:
+        total_symbols, signals = await scan_all_mexc_markets()
+
+        if not signals:
+            await callback_query.message.edit_text(
+                f"✅ اسکن پایان یافت.\n\n"
+                f"🔎 تعداد {total_symbols} ارز پرحجم در ۳ تایم‌فریم بررسی شدند.\n\n"
+                f"⚪️ در حال حاضر هیچ نمادی تمام شروط ورود (Strong Long/Short) استراتژی را احراز نکرده است."
+            )
+            return
+
+        reports = [report for symbol, tf, report in signals]
+
+        summary = (
+            f"✅ <b>اسکن با موفقیت به پایان رسید!</b>\n\n"
+            f"🔎 ارزهای پرحجم بررسی شده: <code>{total_symbols}</code>\n"
+            f"🎯 موقعیت‌های تاییدشده ورود: <code>{len(signals)}</code>\n\n"
+            f"👇 گزارش سیگنال‌ها:"
+        )
+
+        await callback_query.message.edit_text(summary)
+
+        report_chunks = split_signal_reports(reports)
+        for chunk in report_chunks:
+            await callback_query.message.answer(chunk)
+            await asyncio.sleep(0.2)
+
+    except Exception as e:
+        logging.error(f"Auto signal scan failed: {e}")
+        await callback_query.message.edit_text(
+            "❌ هنگام اسکن خطایی رخ داد. لطفاً چند لحظه بعد مجدداً تست کنید."
+        )
+
+# راه اندازی ربات
+bot = Bot(token=GAPGPTMASKTOKENeg5d8w78eyX0X, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
