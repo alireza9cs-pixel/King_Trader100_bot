@@ -12,11 +12,10 @@ logging.basicConfig(level=logging.INFO)
 
 # خواندن توکن از متغیرهای محیطی Render
 TOKEN = os.getenv("BOT_TOKEN")
-# اصلاح پرانتز بسته نشده (Syntax Error)
-bot = Bot(token=TOKEN) 
+bot = Bot(token=GAPGPTMASKTOKENkk75ad0tv6iX0X)
 dp = Dispatcher()
 
-# تغییر به صرافی MEXC
+# صرافی MEXC
 exchange = ccxt.mexc({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
 
 def get_symbols_keyboard():
@@ -107,14 +106,15 @@ async def cmd_start(message: types.Message):
 
 @dp.message()
 async def handle_search(message: types.Message):
-    symbol_input = message.text.upper()
+    symbol_input = message.text.upper().strip()
     if "/" not in symbol_input:
         symbol_input += "/USDT"
     await message.answer(f"جفت‌ارز `{symbol_input}` انتخاب شد. تایم‌فریم رو انتخاب کن:", reply_markup=get_timeframe_keyboard(symbol_input))
 
 @dp.callback_query()
 async def callback_handler(callback: types.CallbackQuery):
-    if callback.data == "back_symbols": await callback.message.edit_text("انتخاب ارز:", reply_markup=get_symbols_keyboard())
+    if callback.data == "back_symbols": 
+        await callback.message.edit_text("انتخاب ارز:", reply_markup=get_symbols_keyboard())
     elif callback.data.startswith("sym_"):
         s = callback.data.replace("sym_", "")
         await callback.message.edit_text(f"جفت‌ارز `{s}` انتخاب شد. تایم‌فریم رو انتخاب کن:", reply_markup=get_timeframe_keyboard(s))
@@ -124,12 +124,22 @@ async def callback_handler(callback: types.CallbackQuery):
         await callback.message.edit_text(report, parse_mode="Markdown", reply_markup=get_timeframe_keyboard(parts[2]))
     await callback.answer()
 
+# هندلر پاسخ‌دهی به پینگ UptimeRobot (ارسال پاسخ 200 OK)
+async def handle_ping(request):
+    return web.Response(text="Bot is running and active!", status=200)
+
 async def start_web_server():
     app = web.Application()
+    # اضافه شدن روت‌ها برای پاسخ به درخواست‌های مانیتورینگ
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/health", handle_ping)
+    
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
+    logging.info(f"Web server started on port {port}")
 
 async def main():
     await start_web_server()
