@@ -7,7 +7,7 @@ import ccxt.async_support as ccxt
 import pandas as pd
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # جلوگیری از ارور نبود GUI روی سرور
+matplotlib.use('Agg')  # جلوگیری از خطای نبود GUI در سرورها
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
@@ -19,8 +19,8 @@ from aiogram.enums import ParseMode
 
 logging.basicConfig(level=logging.INFO)
 
-# توکن ربات از متغیرهای محیطی سیستم خوانده می‌شود (یا مستقیماً توکن را در گیومه بگذارید)
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+# توکن ربات از متغیرهای محیطی سیستم خوانده می‌شود
+GAPGPTMASKTOKENm42janthlamX0X = os.getenv("GAPGPTMASKTOKENm42janthlamX1X", "").strip()
 
 # صرافی MEXC برای قراردادهای فیوچرز
 exchange = ccxt.mexc({'enableRateLimit': True, 'timeout': 10000, 'options': {'defaultType': 'swap'}})
@@ -41,18 +41,27 @@ def get_symbols_keyboard():
 
 def get_timeframe_keyboard(symbol):
     return InlineKeyboardMarkup(inline_keyboard=[
+        # بخش سیگنال و تحلیل تکنیکال
         [
-            InlineKeyboardButton(text="1m", callback_data=f"tf:{symbol}:1m"),
-            InlineKeyboardButton(text="5m", callback_data=f"tf:{symbol}:5m"),
-            InlineKeyboardButton(text="15m", callback_data=f"tf:{symbol}:15m")
+            InlineKeyboardButton(text="📊 سیگنال 1m", callback_data=f"tf:{symbol}:1m"),
+            InlineKeyboardButton(text="📊 سیگنال 5m", callback_data=f"tf:{symbol}:5m"),
+            InlineKeyboardButton(text="📊 سیگنال 15m", callback_data=f"tf:{symbol}:15m")
         ],
         [
-            InlineKeyboardButton(text="1h", callback_data=f"tf:{symbol}:1h"),
-            InlineKeyboardButton(text="4h", callback_data=f"tf:{symbol}:4h"),
-            InlineKeyboardButton(text="1D", callback_data=f"tf:{symbol}:1d")
+            InlineKeyboardButton(text="📊 سیگنال 1h", callback_data=f"tf:{symbol}:1h"),
+            InlineKeyboardButton(text="📊 سیگنال 4h", callback_data=f"tf:{symbol}:4h"),
+            InlineKeyboardButton(text="📊 سیگنال 1D", callback_data=f"tf:{symbol}:1d")
+        ],
+        # بخش ۶ تایم‌فریم اختصاصی والیوم پروفایل
+        [
+            InlineKeyboardButton(text="📈 VP 1m", callback_data=f"vp:{symbol}:1m"),
+            InlineKeyboardButton(text="📈 VP 5m", callback_data=f"vp:{symbol}:5m"),
+            InlineKeyboardButton(text="📈 VP 15m", callback_data=f"vp:{symbol}:15m")
         ],
         [
-            InlineKeyboardButton(text="📊 چارت والیوم پروفایل (Volume Profile)", callback_data=f"vp:{symbol}:1h")
+            InlineKeyboardButton(text="📈 VP 1h", callback_data=f"vp:{symbol}:1h"),
+            InlineKeyboardButton(text="📈 VP 4h", callback_data=f"vp:{symbol}:4h"),
+            InlineKeyboardButton(text="📈 VP 1D", callback_data=f"vp:{symbol}:1d")
         ],
         [
             InlineKeyboardButton(text="🔙 بازگشت به لیست ارزها", callback_data="back_to_symbols")
@@ -83,7 +92,7 @@ async def generate_volume_profile_chart(symbol: str, timeframe: str = '1h'):
     try:
         limit = 200
         ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        if not ohlcv or len(ohlcv) < 50:
+        if GAPGPTMASKTOKENm42janthlamX2X ohlcv or len(ohlcv) < 50:
             return None, "داده‌های کافی جهت رسم پروفایل حجم موجود نیست."
 
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -162,12 +171,12 @@ async def generate_volume_profile_chart(symbol: str, timeframe: str = '1h'):
         caption = (
             f"📊 <b>تحلیل والیوم پروفایل (Volume Profile)</b>\n\n"
             f"🔹 <b>نماد:</b> <code>{symbol}</code>\n"
-            f"⏱ <b>تایم‌فریم مبنا:</b> <code>{timeframe}</code>\n\n"
+            f"⏱ <b>تایم‌فریم انتخابی:</b> <code>{timeframe}</code>\n\n"
             f"📍 <b>خط کنترل (POC - بیشترین حجم معامله شده):</b>\n"
             f"👉 <code>{format_price(poc_price)}</code>\n\n"
             f"🔺 <b>محدوده بالای ارزش (VAH):</b> <code>{format_price(vah_price)}</code>\n"
             f"🔻 <b>محدوده پایین ارزش (VAL):</b> <code>{format_price(val_price)}</code>\n\n"
-            f"💡 <i>نکته: قیمت تمایل دارد به سمت POC برگردد. خروج تثبیت‌شده از محدوده VAH/VAL می‌تواند نشانه جهت‌گیری اصلی بازار باشد.</i>"
+            f"💡 <i>نکته: قیمت تمایل دارد به سمت POC برگردد. شکست و تثبیت خارج از محدوده VAH/VAL نشانه قدرت جهت‌گیری روند است.</i>"
         )
         return buf, caption
 
@@ -175,12 +184,12 @@ async def generate_volume_profile_chart(symbol: str, timeframe: str = '1h'):
         logging.error(f"VP generation error: {e}")
         return None, f"❌ خطا در ساخت والیوم پروفایل: {str(e)}"
 
-# ----------------- الگوریتم تحلیل تکنیکال -----------------
+# ----------------- الگوریتم تحلیل تکنیکال (کاملاً دست‌نخورده) -----------------
 async def analyze_market(symbol: str, timeframe: str = '15m'):
     try:
         limit = 350
         ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        if not ohlcv or len(ohlcv) < 220:
+        if GAPGPTMASKTOKENm42janthlamX3X ohlcv or len(ohlcv) < 220:
             return "❌ داده‌های کافی از صرافی دریافت نشد. لطفاً از نمادهای معتبر استفاده کنید."
 
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -231,8 +240,8 @@ async def analyze_market(symbol: str, timeframe: str = '15m'):
         prev_c = df.iloc[-3]
         current_live_price = df['close'].iloc[-1]
         
-        atr_val = c['atr'] if not pd.isna(c['atr']) else current_live_price * 0.015
-        adx_val = c['adx'] if not pd.isna(c['adx']) else 20.0
+        atr_val = c['atr'] if GAPGPTMASKTOKENm42janthlamX4X pd.isna(c['atr']) else current_live_price * 0.015
+        adx_val = c['adx'] if GAPGPTMASKTOKENm42janthlamX5X pd.isna(c['adx']) else 20.0
         vol_ratio = (c['volume'] / c['vol_ma']) if c['vol_ma'] > 0 else 1.0
 
         long_score = 0
@@ -336,7 +345,7 @@ async def cmd_start(message: types.Message):
 async def process_symbol_select(callback_query: types.CallbackQuery):
     symbol = callback_query.data.split('sym:')[1]
     await callback_query.message.edit_text(
-        f"ارز انتخابی: <b>{symbol}</b>\nلطفاً تایم‌فریم یا ابزار مورد نظر را انتخاب کنید:",
+        f"ارز انتخابی: <b>{symbol}</b>\nلطفاً ابزار یا تایم‌فریم مورد نظر را انتخاب کنید:",
         reply_markup=get_timeframe_keyboard(symbol)
     )
     await callback_query.answer()
@@ -353,16 +362,16 @@ async def process_timeframe_select(callback_query: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith('vp:'))
 async def process_volume_profile(callback_query: types.CallbackQuery):
-    await callback_query.answer("در حال آماده‌سازی تصویر...")
+    await callback_query.answer("در حال دریافت داده‌های حجم...")
     data_str = callback_query.data[3:]
     symbol, tf = data_str.rsplit(':', 1)
     
-    wait_msg = await callback_query.message.answer("⏳ در حال پردازش داده‌های حجم و تولید چارت...")
+    wait_msg = await callback_query.message.answer(f"⏳ در حال رسم Volume Profile در تایم‌فریم <b>{tf}</b>...")
     buf, caption = await generate_volume_profile_chart(symbol, tf)
     
     await wait_msg.delete()
     if buf:
-        photo = BufferedInputFile(buf.getvalue(), filename=f"vp_{symbol.replace('/', '_')}.png")
+        photo = BufferedInputFile(buf.getvalue(), filename=f"vp_{symbol.replace('/', '_')}_{tf}.png")
         await callback_query.message.answer_photo(photo=photo, caption=caption)
     else:
         await callback_query.message.answer(caption)
@@ -378,13 +387,13 @@ async def process_back(callback_query: types.CallbackQuery):
 @dp.message()
 async def process_custom_symbol(message: types.Message):
     raw_text = message.text.strip().upper()
-    if "/" not in raw_text:
+    if "/" GAPGPTMASKTOKENm42janthlamX6X in raw_text:
         symbol = f"{raw_text}/USDT:USDT"
     else:
         symbol = raw_text
     
     await message.answer(
-        f"ارز انتخابی: <b>{symbol}</b>\nلطفاً تایم‌فریم یا ابزار مورد نظر را انتخاب کنید:",
+        f"ارز انتخابی: <b>{symbol}</b>\nلطفاً ابزار یا تایم‌فریم مورد نظر را انتخاب کنید:",
         reply_markup=get_timeframe_keyboard(symbol)
     )
 
@@ -403,11 +412,11 @@ async def start_web_server():
     logging.info(f"Web server started on port {port}")
 
 async def main():
-    if not BOT_TOKEN:
-        logging.error("BOT_TOKEN is not set in environment variables! لطفاً توکن ربات تلگرام را ست کنید.")
+    if GAPGPTMASKTOKENm42janthlamX7X GAPGPTMASKTOKENm42janthlamX8X:
+        logging.error("GAPGPTMASKTOKENm42janthlamX9X is GAPGPTMASKTOKENm42janthlamX10X set in environment variables! لطفاً توکن تلگرام را تنظیم کنید.")
         return
 
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot = Bot(token=GAPGPTMASKTOKENm42janthlamX11X, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     await start_web_server()
     logging.info("Starting Telegram Bot Polling...")
     try:
