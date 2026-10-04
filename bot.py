@@ -146,7 +146,7 @@ async def start_web_server():
 async def main():
     await start_web_server()
     if TOKEN:
-        bot = Bot(token=GAPGPTMASKTOKENxv9ijlrtxaX0X)
+        bot = Bot(token=TOKEN)
         logging.info("Starting bot polling...")
         await dp.start_polling(bot)
     else:
