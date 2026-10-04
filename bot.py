@@ -7,13 +7,15 @@ import pandas as pd
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
 logging.basicConfig(level=logging.INFO)
 
-# خواندن امن توکن تلگرام
+# توکن ربات از متغیرهای محیطی خوانده می‌شود
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
-# صرافی MEXC با تایم‌اوت ۱۰ ثانیه‌ای جهت عدم معلق ماندن
+# صرافی MEXC برای قراردادهای فیوچرز
 exchange = ccxt.mexc({'enableRateLimit': True, 'timeout': 10000, 'options': {'defaultType': 'swap'}})
 
 dp = Dispatcher()
@@ -49,22 +51,25 @@ def get_timeframe_keyboard(symbol):
 
 async def analyze_market(symbol: str, timeframe: str = '15m'):
     try:
-        limit = 100
+        # دریافت ۳۰۰ کندل جهت محاسبه دقیق EMA200
+        limit = 300
         ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        if not ohlcv or len(ohlcv) < 30:
+        if not ohlcv or len(ohlcv) < 200:
             return "❌ داده‌های کافی از صرافی دریافت نشد. لطفاً از نمادهای معتبر استفاده کنید."
 
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
-        # محاسبات اندیکاتورها و میانگین‌ها
+        # محاسبه EMA 50 و EMA 200
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
-        df['ema200'] = df['close'].ewm(span=len(df), adjust=False).mean()
+        df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
         
-        # محاسبه RSI
+        # محاسبه استاندارد RSI
         delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / (loss + 1e-9)
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        rs = avg_gain / (avg_loss + 1e-9)
         df['rsi'] = 100 - (100 / (1 + rs))
 
         # محاسبه MACD
@@ -73,7 +78,7 @@ async def analyze_market(symbol: str, timeframe: str = '15m'):
         df['macd'] = ema12 - ema26
         df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
 
-        # محاسبه نوسان واقعی پویا (ATR)
+        # محاسبه ATR
         tr1 = df['high'] - df['low']
         tr2 = (df['high'] - df['close'].shift(1)).abs()
         tr3 = (df['low'] - df['close'].shift(1)).abs()
@@ -88,7 +93,7 @@ async def analyze_market(symbol: str, timeframe: str = '15m'):
         ema200_val = df['ema200'].iloc[-1]
         atr_val = df['atr'].iloc[-1] if not pd.isna(df['atr'].iloc[-1]) else current_price * 0.015
 
-        # سیستم هم‌گرایی و امتیازدهی
+        # سیستم امتیازدهی
         score = 0
         if current_price > ema50_val:
             score += 1
@@ -105,52 +110,45 @@ async def analyze_market(symbol: str, timeframe: str = '15m'):
         else:
             score -= 1
 
-        if rsi_val > 52:
+        if rsi_val > 53:
             score += 1
-        elif rsi_val < 48:
+        elif rsi_val < 47:
             score -= 1
 
-        # تعیین جهت ورود و سطوح خروج
+        # تعیین جهت ورود و اهداف
         if score >= 2:
-            direction = "🟢 صعودی (Bullish - High Confluence)"
-            fvg_state = "شکست صعودی گپ (Mitigated)"
-            sl = round(current_price - (1.5 * atr_val), 4)
-            tp1 = round(current_price + (1.0 * atr_val), 4)
-            tp2 = round(current_price + (2.0 * atr_val), 4)
-            tp3 = round(current_price + (3.2 * atr_val), 4)
-            tp4 = round(current_price + (4.5 * atr_val), 4)
+            direction = "🟢 صعودی (Long / Bullish)"
+            sl = round(current_price - (1.2 * atr_val), 4)
+            tp1 = round(current_price + (1.5 * atr_val), 4)
+            tp2 = round(current_price + (2.5 * atr_val), 4)
+            tp3 = round(current_price + (3.5 * atr_val), 4)
+            tp4 = round(current_price + (5.0 * atr_val), 4)
         elif score <= -2:
-            direction = "🔴 نزولی (Bearish - High Confluence)"
-            fvg_state = "شکست نزولی گپ (Mitigated)"
-            sl = round(current_price + (1.5 * atr_val), 4)
-            tp1 = round(current_price - (1.0 * atr_val), 4)
-            tp2 = round(current_price - (2.0 * atr_val), 4)
-            tp3 = round(current_price - (3.2 * atr_val), 4)
-            tp4 = round(current_price - (4.5 * atr_val), 4)
+            direction = "🔴 نزولی (Short / Bearish)"
+            sl = round(current_price + (1.2 * atr_val), 4)
+            tp1 = round(current_price - (1.5 * atr_val), 4)
+            tp2 = round(current_price - (2.5 * atr_val), 4)
+            tp3 = round(current_price - (3.5 * atr_val), 4)
+            tp4 = round(current_price - (5.0 * atr_val), 4)
         else:
-            direction = "⚪️ خنثی / رِنج (صبر برای تاییدیه)"
-            fvg_state = "ناحیه تعادل (Equilibrium)"
-            sl = round(current_price - atr_val, 4)
-            tp1 = round(current_price + atr_val, 4)
-            tp2 = round(current_price + (1.8 * atr_val), 4)
-            tp3 = round(current_price + (2.5 * atr_val), 4)
-            tp4 = round(current_price + (3.5 * atr_val), 4)
+            direction = "⚪️ خنثی / بدون معامله (صبر برای خروج از رِنج)"
+            sl = tp1 = tp2 = tp3 = tp4 = "-"
 
         report = (
-            f"📊 <b>گزارش تحلیل تکنیکال و پرایس‌اکشن</b>\n\n"
+            f"📊 <b>گزارش تحلیل تکنیکال</b>\n\n"
             f"🔹 <b>نماد:</b> <code>{symbol}</code>\n"
             f"⏱ <b>تایم‌فریم:</b> <code>{timeframe}</code>\n"
             f"💵 <b>Entry Price:</b> <code>{current_price}</code>\n"
-            f"📈 <b>جهت پیشنهادی:</b> {direction}\n\n"
+            f"📈 <b>سیگنال:</b> {direction}\n\n"
             f"🎯 <b>اهداف سود (Take Profit):</b>\n"
             f"  ▫️ TP 1: <code>{tp1}</code>\n"
             f"  ▫️ TP 2: <code>{tp2}</code>\n"
             f"  ▫️ TP 3: <code>{tp3}</code>\n"
             f"  ▫️ TP 4: <code>{tp4}</code>\n\n"
             f"🛑 <b>حد ضرر (Stop Loss):</b> <code>{sl}</code>\n\n"
-            f"🔍 <b>وضعیت پرایس‌اکشن:</b> {fvg_state}\n"
             f"📊 <b>شاخص RSI:</b> <code>{rsi_val:.2f}</code>\n"
-            f"📉 <b>وضعیت MACD:</b> {'مثبت/گاوی' if macd_val > macd_sig else 'منفی/خرسی'}"
+            f"📉 <b>وضعیت MACD:</b> {'گاوی (Bullish)' if macd_val > macd_sig else 'خرسی (Bearish)'}\n"
+            f"📏 <b>وضعیت نسبت به EMA200:</b> {'بالای میانگین' if current_price > ema200_val else 'زیر میانگین'}"
         )
         return report
 
@@ -170,7 +168,6 @@ async def process_symbol_select(callback_query: types.CallbackQuery):
     symbol = callback_query.data.split('sym:')[1]
     await callback_query.message.edit_text(
         f"ارز انتخابی: <b>{symbol}</b>\nلطفاً تایم‌فریم مورد نظر را انتخاب کنید:",
-        parse_mode="HTML",
         reply_markup=get_timeframe_keyboard(symbol)
     )
     await callback_query.answer()
@@ -178,13 +175,12 @@ async def process_symbol_select(callback_query: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data.startswith('tf:'))
 async def process_timeframe_select(callback_query: types.CallbackQuery):
     await callback_query.answer()
-    # استخراج امن نماد و تایم‌فریم بدون باگ جداکننده دو نقطه
-    data_str = callback_query.data[3:]  # حذف 'tf:'
+    data_str = callback_query.data[3:]
     symbol, tf = data_str.rsplit(':', 1)
     
     await callback_query.message.edit_text("⏳ در حال دریافت داده‌ها و تحلیل هوشمند... لطفاً شکیبا باشید.")
     result = await analyze_market(symbol, tf)
-    await callback_query.message.edit_text(result, parse_mode="HTML", reply_markup=get_timeframe_keyboard(symbol))
+    await callback_query.message.edit_text(result, reply_markup=get_timeframe_keyboard(symbol))
 
 @dp.callback_query(lambda c: c.data == 'back_to_symbols')
 async def process_back(callback_query: types.CallbackQuery):
@@ -204,7 +200,6 @@ async def process_custom_symbol(message: types.Message):
     
     await message.answer(
         f"ارز انتخابی: <b>{symbol}</b>\nلطفاً تایم‌فریم مورد نظر را انتخاب کنید:",
-        parse_mode="HTML",
         reply_markup=get_timeframe_keyboard(symbol)
     )
 
@@ -227,10 +222,14 @@ async def main():
         logging.error("BOT_TOKEN is not set in environment variables!")
         return
 
-    bot = Bot(token=TOKEN)
+    # استفاده از DefaultBotProperties در aiogram 3.x
+    bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     await start_web_server()
     logging.info("Starting Telegram Bot Polling...")
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await exchange.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
