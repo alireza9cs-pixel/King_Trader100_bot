@@ -11,10 +11,10 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=GAPGPTMASKTOKEN6h0xs50qw7uX0X
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# تغییر صرافی به Bybit
+# صرافی Bybit
 exchange = ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
 
 def get_symbols_keyboard():
@@ -46,7 +46,6 @@ def calculate_macd(df, fast=12, slow=26, signal=9):
 
 async def analyze_market(symbol: str, timeframe: str):
     try:
-        # دریافت داده از بای‌بیت
         ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=100)
         if not ohlcv: return "❌ خطا: ارز یافت نشد یا داده‌ای ندارد.", None
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -104,14 +103,11 @@ async def analyze_market(symbol: str, timeframe: str):
 async def cmd_start(message: types.Message):
     await message.answer("سلام! ارز مورد نظر رو انتخاب کن یا اسمش رو بنویس (مثلا ADA):", reply_markup=get_symbols_keyboard())
 
-# هندلر برای سرچ کردن ارز
 @dp.message()
 async def handle_search(message: types.Message):
     symbol_input = message.text.upper()
     if "/" not in symbol_input:
         symbol_input += "/USDT"
-    
-    # تست ساده برای اینکه بفهمیم ارزه
     await message.answer(f"جفت‌ارز `{symbol_input}` انتخاب شد. تایم‌فریم رو انتخاب کن:", reply_markup=get_timeframe_keyboard(symbol_input))
 
 @dp.callback_query()
