@@ -26,7 +26,10 @@ from aiogram.enums import ParseMode
 logging.basicConfig(level=logging.INFO)
 
 # توکن ربات از متغیر محیطی خوانده می‌شود
-GAPGPTMASKTOKENeg5d8w78eyX0X = os.getenv("GAPGPTMASKTOKENeg5d8w78eyX1X", "").strip()
+GAPGPTMASKTOKENr32blqchfv9X1X = os.getenv("GAPGPTMASKTOKENr32blqchfv9X2X", "").strip()
+
+if not GAPGPTMASKTOKENr32blqchfv9X3X:
+    raise RuntimeError("متغیر محیطی GAPGPTMASKTOKENr32blqchfv9X4X تنظیم نشده است")
 
 # صرافی MEXC برای قراردادهای فیوچرز
 exchange = ccxt.mexc({
@@ -1195,7 +1198,10 @@ async def process_auto_signal(callback_query: types.CallbackQuery):
         )
 
 # راه اندازی ربات
-bot = Bot(token=GAPGPTMASKTOKENeg5d8w78eyX0X, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+bot = Bot(
+    token=GAPGPTMASKTOKENr32blqchfv9X5X,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 
 async def main():
     await dp.start_polling(bot)
