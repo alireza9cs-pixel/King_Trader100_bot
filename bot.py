@@ -10,13 +10,13 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 logging.basicConfig(level=logging.INFO)
 
-# خواندن توکن از متغیرهای محیطی Render
-TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=GAPGPTMASKTOKENl2wp1hkzfbX0X)
-dp = Dispatcher()
+# خواندن توکن از متغیرهای محیطی با مقدار پیش‌فرض امن
+TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 # صرافی MEXC
 exchange = ccxt.mexc({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
+
+dp = Dispatcher()
 
 def get_symbols_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -124,13 +124,12 @@ async def callback_handler(callback: types.CallbackQuery):
         await callback.message.edit_text(report, parse_mode="Markdown", reply_markup=get_timeframe_keyboard(parts[2]))
     await callback.answer()
 
-# هندلر پاسخ‌دهی به پینگ UptimeRobot (ارسال پاسخ 200 OK)
+# وب‌سرور برای پاسخ‌دهی به پینگ UptimeRobot و رندر
 async def handle_ping(request):
     return web.Response(text="Bot is running and active!", status=200)
 
 async def start_web_server():
     app = web.Application()
-    # اضافه شدن روت‌ها برای پاسخ به درخواست‌های مانیتورینگ
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
     
@@ -143,7 +142,14 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    await dp.start_polling(bot)
+    if TOKEN:
+        bot = Bot(token=TOKEN)
+        logging.info("Starting bot polling...")
+        await dp.start_polling(bot)
+    else:
+        logging.warning("BOT_TOKEN is missing. Web server is running, but bot polling will not start.")
+        while True:
+            await asyncio.sleep(3600)
 
 if __name__ == "__main__":
     asyncio.run(main())
