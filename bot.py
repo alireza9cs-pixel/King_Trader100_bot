@@ -26,6 +26,7 @@ def get_symbols_keyboard():
 
 def get_timeframe_keyboard(symbol):
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="1m", callback_data=f"tf_1m_{symbol}"), InlineKeyboardButton(text="5m", callback_data=f"tf_5m_{symbol}")],
         [InlineKeyboardButton(text="15m", callback_data=f"tf_15m_{symbol}"), InlineKeyboardButton(text="1h", callback_data=f"tf_1h_{symbol}")],
         [InlineKeyboardButton(text="4h", callback_data=f"tf_4h_{symbol}"), InlineKeyboardButton(text="1D", callback_data=f"tf_1d_{symbol}")],
         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="back_symbols")]
@@ -75,6 +76,7 @@ async def analyze_market(symbol: str, timeframe: str):
         tp1 = last['close'] * 1.01 if sentiment == "🟢 صعودی (Bullish)" else last['close'] * 0.99
         tp2 = last['close'] * 1.02 if sentiment == "🟢 صعودی (Bullish)" else last['close'] * 0.98
         tp3 = last['close'] * 1.04 if sentiment == "🟢 صعودی (Bullish)" else last['close'] * 0.96
+        tp4 = last['close'] * 1.06 if sentiment == "🟢 صعودی (Bullish)" else last['close'] * 0.94
 
         report = (
             f"👑 **تحلیل جامع {symbol} - {timeframe}** 👑\n\n"
@@ -95,7 +97,8 @@ async def analyze_market(symbol: str, timeframe: str):
             f"• Stop Loss: `{sl:.6f}`\n"
             f"• TP 1: `{tp1:.6f}`\n"
             f"• TP 2: `{tp2:.6f}`\n"
-            f"• TP 3: `{tp3:.6f}`"
+            f"• TP 3: `{tp3:.6f}`\n"
+            f"• TP 4: `{tp4:.6f}`"
         )
         return report, None
     except Exception as e: return f"❌ خطا: {str(e)}", None
@@ -143,11 +146,11 @@ async def start_web_server():
 async def main():
     await start_web_server()
     if TOKEN:
-        bot = Bot(token=TOKEN)
+        bot = Bot(token=GAPGPTMASKTOKENxv9ijlrtxaX0X)
         logging.info("Starting bot polling...")
         await dp.start_polling(bot)
     else:
-        logging.warning("BOT_TOKEN is missing. Web server is running, but bot polling will not start.")
+        logging.warning("BOT_TOKEN is not set. Web server is running, but bot polling will not start.")
         while True:
             await asyncio.sleep(3600)
 
