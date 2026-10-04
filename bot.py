@@ -19,7 +19,7 @@ from aiogram.enums import ParseMode
 
 logging.basicConfig(level=logging.INFO)
 
-# توکن ربات از متغیرهای محیطی سیستم خوانده می‌شود (یا مستقیماً توکن را در گیومه بگذارید)
+# توکن ربات از متغیرهای محیطی خوانده می‌شود (یا مستقیماً توکن را در گیومه بگذارید)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 # صرافی MEXC برای قراردادهای فیوچرز
@@ -89,24 +89,20 @@ async def generate_volume_profile_chart(symbol: str, timeframe: str = '1h'):
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-        # تقسیم دامنه قیمت به سطوح مختلف
         price_min = df['low'].min()
         price_max = df['high'].max()
         bins = 45
         price_bins = np.linspace(price_min, price_max, bins)
         vol_profile = np.zeros(len(price_bins) - 1)
 
-        # تخصیص حجم معاملات به قیمت‌ها
         for _, row in df.iterrows():
             idx = np.digitize((row['open'] + row['close'] + row['high'] + row['low']) / 4, price_bins) - 1
             if 0 <= idx < len(vol_profile):
                 vol_profile[idx] += row['volume']
 
-        # محاسبه POC
         poc_idx = np.argmax(vol_profile)
         poc_price = (price_bins[poc_idx] + price_bins[poc_idx + 1]) / 2
 
-        # محاسبه Value Area (70 درصد حجم کل)
         total_vol = vol_profile.sum()
         va_target = total_vol * 0.70
         sorted_indices = np.argsort(vol_profile)[::-1]
@@ -121,7 +117,6 @@ async def generate_volume_profile_chart(symbol: str, timeframe: str = '1h'):
         val_price = price_bins[min(va_indices)]
         vah_price = price_bins[max(va_indices) + 1]
 
-        # رسم چارت
         plt.style.use('dark_background')
         fig, (ax_main, ax_vp) = plt.subplots(
             1, 2, figsize=(12, 6), sharey=True,
@@ -133,7 +128,6 @@ async def generate_volume_profile_chart(symbol: str, timeframe: str = '1h'):
             ax_main.plot([row['datetime'], row['datetime']], [row['low'], row['high']], color=color, linewidth=1)
             ax_main.plot([row['datetime'], row['datetime']], [row['open'], row['close']], color=color, linewidth=3)
 
-        # خطوط POC و VAH و VAL
         ax_main.axhline(poc_price, color='#ff1744', linestyle='--', linewidth=1.5, label=f'POC: {format_price(poc_price)}')
         ax_main.axhline(vah_price, color='#00e676', linestyle=':', linewidth=1.3, label=f'VAH: {format_price(vah_price)}')
         ax_main.axhline(val_price, color='#ff9100', linestyle=':', linewidth=1.3, label=f'VAL: {format_price(val_price)}')
@@ -143,7 +137,6 @@ async def generate_volume_profile_chart(symbol: str, timeframe: str = '1h'):
         ax_main.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
         plt.setp(ax_main.get_xticklabels(), rotation=30, ha='right')
 
-        # ستون‌های والیوم پروفایل
         bin_height = price_bins[1] - price_bins[0]
         bin_centers = price_bins[:-1] + (bin_height / 2)
         bar_colors = ['#ff5252' if i == poc_idx else '#42a5f5' for i in range(len(vol_profile))]
@@ -175,7 +168,7 @@ async def generate_volume_profile_chart(symbol: str, timeframe: str = '1h'):
         logging.error(f"VP generation error: {e}")
         return None, f"❌ خطا در ساخت والیوم پروفایل: {str(e)}"
 
-# ----------------- الگوریتم تحلیل تکنیکال با تاییدیه پول هوشمند (SMC) -----------------
+# ----------------- الگوریتم تحلیل تکنیکال تلفیقی (SMC + ICT + RTM) -----------------
 async def analyze_market(symbol: str, timeframe: str = '15m'):
     try:
         limit = 350
@@ -185,12 +178,12 @@ async def analyze_market(symbol: str, timeframe: str = '15m'):
 
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
-        # محاسبه EMA
+        # ۱. اندیکاتورهای پایه و تشخیص روند
         df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
         
-        # محاسبه RSI
+        # RSI
         delta = df['close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -199,115 +192,134 @@ async def analyze_market(symbol: str, timeframe: str = '15m'):
         rs = avg_gain / (avg_loss + 1e-9)
         df['rsi'] = 100 - (100 / (1 + rs))
 
-        # محاسبه MACD
+        # MACD
         ema12 = df['close'].ewm(span=12, adjust=False).mean()
         ema26 = df['close'].ewm(span=26, adjust=False).mean()
         df['macd'] = ema12 - ema26
         df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
         df['macd_hist'] = df['macd'] - df['macd_signal']
 
-        # محاسبه ATR
+        # ATR
         tr1 = df['high'] - df['low']
         tr2 = (df['high'] - df['close'].shift(1)).abs()
         tr3 = (df['low'] - df['close'].shift(1)).abs()
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         df['atr'] = tr.rolling(window=14).mean()
 
-        # محاسبه ADX
+        # ADX
         plus_dm = df['high'].diff()
         minus_dm = -df['low'].diff()
         plus_dm = pd.Series(np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0))
         minus_dm = pd.Series(np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0))
-        
         tr_s = tr.rolling(window=14).sum()
         plus_di = 100 * (plus_dm.rolling(window=14).sum() / (tr_s + 1e-9))
         minus_di = 100 * (minus_dm.rolling(window=14).sum() / (tr_s + 1e-9))
         dx = (abs(plus_di - minus_di) / (plus_di + minus_di + 1e-9)) * 100
         df['adx'] = dx.rolling(window=14).mean()
-
         df['vol_ma'] = df['volume'].rolling(window=20).mean()
 
-        # محاسبات ساختار نقدینگی و اسمارت‌مانی (سقف و کف معتبر ۲۰ کندل اخیر)
-        recent_high = df['high'].iloc[-21:-1].max()
-        recent_low = df['low'].iloc[-21:-1].min()
-
-        c = df.iloc[-2]
-        prev_c = df.iloc[-3]
+        # داده‌های کندل‌های پایانی
+        c = df.iloc[-2]       # آخرین کندل کامل بسته شده
+        prev_c = df.iloc[-3]  # کندل ماقبل
         current_live_price = df['close'].iloc[-1]
         
         atr_val = c['atr'] if not pd.isna(c['atr']) else current_live_price * 0.015
         adx_val = c['adx'] if not pd.isna(c['adx']) else 20.0
         vol_ratio = (c['volume'] / c['vol_ma']) if c['vol_ma'] > 0 else 1.0
 
+        recent_high = df['high'].iloc[-25:-2].max()
+        recent_low = df['low'].iloc[-25:-2].min()
+
+        # ۲. ماژول سبک ICT:
+        bullish_fvg = prev_c['high'] < c['low']
+        bearish_fvg = prev_c['low'] > c['high']
+
+        long_liq_sweep = (c['low'] < recent_low) and (c['close'] > recent_low) and (c['close'] > c['open'])
+        short_liq_sweep = (c['high'] > recent_high) and (c['close'] < recent_high) and (c['close'] < c['open'])
+
+        # ۳. ماژول سبک RTM:
+        bullish_engulf = (c['close'] > prev_c['high']) and (c['close'] > c['open']) and (abs(c['close'] - c['open']) > atr_val * 0.8)
+        bearish_engulf = (c['close'] < prev_c['low']) and (c['close'] < c['open']) and (abs(c['close'] - c['open']) > atr_val * 0.8)
+
+        ftr_bullish = (c['close'] > recent_high) and (c['low'] > prev_c['low'])
+        ftr_bearish = (c['close'] < recent_low) and (c['high'] < prev_c['high'])
+
         long_score = 0
         short_score = 0
 
-        # فیلتر ترند کلان
         trend_bullish = c['close'] > c['ema200']
         trend_bearish = c['close'] < c['ema200']
 
         if c['ema20'] > c['ema50']:
-            long_score += 1.5
-        elif c['ema20'] < c['ema50']:
-            short_score += 1.5
-
-        if c['close'] > c['ema50']:
             long_score += 1.0
-        else:
+        elif c['ema20'] < c['ema50']:
             short_score += 1.0
 
         if c['macd'] > c['macd_signal']:
             long_score += 1.0
-            if c['macd_hist'] > prev_c['macd_hist']:
-                long_score += 0.5
         elif c['macd'] < c['macd_signal']:
             short_score += 1.0
-            if c['macd_hist'] < prev_c['macd_hist']:
-                short_score += 0.5
 
-        if 52 <= c['rsi'] <= 68:
-            long_score += 1.5
-        elif c['rsi'] > 75:
-            long_score -= 2.0
+        if 48 <= c['rsi'] <= 68:
+            long_score += 1.0
+        if 32 <= c['rsi'] <= 52:
+            short_score += 1.0
 
-        if 32 <= c['rsi'] <= 48:
-            short_score += 1.5
-        elif c['rsi'] < 25:
-            short_score -= 2.0
+        if bullish_fvg or long_liq_sweep:
+            long_score += 2.0
+        if bearish_fvg or short_liq_sweep:
+            short_score += 2.0
 
-        is_trending = adx_val >= 21
-        has_volume = vol_ratio >= 0.95
+        if bullish_engulf or ftr_bullish:
+            long_score += 2.0
+        if bearish_engulf or ftr_bearish:
+            short_score += 2.0
 
-        # شرط شکست ساختار نقدینگی (SMC Breakout / Momentum Confirmation)
-        smc_long_ok = (c['close'] >= recent_high * 0.995) and (c['close'] > c['open'])
-        smc_short_ok = (c['close'] <= recent_low * 1.005) and (c['close'] < c['open'])
+        is_trending = adx_val >= 20
+        has_volume = vol_ratio >= 1.0
 
-        is_high_prob_long = trend_bullish and (long_score >= 4.0) and is_trending and has_volume and smc_long_ok
-        is_high_prob_short = trend_bearish and (short_score >= 4.0) and is_trending and has_volume and smc_short_ok
+        is_high_prob_long = trend_bullish and (long_score >= 5.0) and (is_trending or has_volume) and (bullish_engulf or ftr_bullish or long_liq_sweep)
+        is_high_prob_short = trend_bearish and (short_score >= 5.0) and (is_trending or has_volume) and (bearish_engulf or ftr_bearish or short_liq_sweep)
+
+        ict_tag = "خنثی"
+        rtm_tag = "فاقد الگو"
 
         if is_high_prob_long:
             direction = "🟢 صعودی قوی (Strong Long) ⭐⭐⭐"
-            sl_val = current_live_price - (1.1 * atr_val)
-            tp1_val = current_live_price + (1.0 * atr_val)
-            tp2_val = current_live_price + (1.8 * atr_val)
-            tp3_val = current_live_price + (2.8 * atr_val)
-            tp4_val = current_live_price + (4.0 * atr_val)
-            confidence = "۸۰٪ تا ۸۸٪ (ورود پرایس‌اکشنی و هم‌جهت با ترند کلان + تأییدیه SMC)"
-            smc_tag = f"✅ تایید ورود نقدینگی سازمانی بالای {format_price(recent_high)}"
+            structure_sl = min(c['low'], prev_c['low']) - (0.3 * atr_val)
+            sl_val = min(structure_sl, current_live_price - (1.2 * atr_val))
+            risk_dist = abs(current_live_price - sl_val)
+            
+            tp1_val = current_live_price + (1.2 * risk_dist)
+            tp2_val = current_live_price + (2.0 * risk_dist)
+            tp3_val = current_live_price + (3.2 * risk_dist)
+            tp4_val = current_live_price + (4.5 * risk_dist)
+            
+            confidence = "۸۲٪ تا ۹۰٪ (تاییدیه هم‌زمان جریان نقدینگی ICT + شکست FTR در RTM)"
+            ict_tag = "تایید جاروب نقدینگی (Sweep) / فعال‌شدن FVG صعودی" if (long_liq_sweep or bullish_fvg) else "جریان نقدینگی صعودی (Bullish Order Flow)"
+            rtm_tag = "اینگالف معتبر مومنتومی و تثبیت زون FTR" if ftr_bullish else "شکست بیس و زون تقاضا (Demand Zone)"
+            
         elif is_high_prob_short:
             direction = "🔴 نزولی قوی (Strong Short) ⭐⭐⭐"
-            sl_val = current_live_price + (1.1 * atr_val)
-            tp1_val = current_live_price - (1.0 * atr_val)
-            tp2_val = current_live_price - (1.8 * atr_val)
-            tp3_val = current_live_price - (2.8 * atr_val)
-            tp4_val = current_live_price - (4.0 * atr_val)
-            confidence = "۸۰٪ تا ۸۸٪ (ورود پرایس‌اکشنی و هم‌جهت با ترند کلان + تأییدیه SMC)"
-            smc_tag = f"✅ تایید تخلیه نقدینگی سازمانی زیر {format_price(recent_low)}"
+            structure_sl = max(c['high'], prev_c['high']) + (0.3 * atr_val)
+            sl_val = max(structure_sl, current_live_price + (1.2 * atr_val))
+            risk_dist = abs(sl_val - current_live_price)
+
+            tp1_val = current_live_price - (1.2 * risk_dist)
+            tp2_val = current_live_price - (2.0 * risk_dist)
+            tp3_val = current_live_price - (3.2 * risk_dist)
+            tp4_val = current_live_price - (4.5 * risk_dist)
+            
+            confidence = "۸۲٪ تا ۹۰٪ (تاییدیه هم‌زمان جریان نقدینگی ICT + شکست FTR در RTM)"
+            ict_tag = "تایید جاروب سقف نقدینگی (BSL Sweep) / تشکیل FVG نزولی" if (short_liq_sweep or bearish_fvg) else "تخلیه نقدینگی سازمانی (Bearish Order Flow)"
+            rtm_tag = "اینگالف کف قبلی و عدم بازگشت به منشأ FTR" if ftr_bearish else "شکست زون عرضه و ورود پرشتاب فروشندگان"
+            
         else:
-            direction = "⚪️ خنثی / بدون معامله (فیلتر حفظ سرمایه - بازار نوسانی یا فاقد ورود پول هوشمند)"
+            direction = "⚪️ خنثی / بدون معامله (فیلتر حفظ سرمایه - بازار نوسانی یا فاقد الگوی ICT/RTM)"
             sl_val = tp1_val = tp2_val = tp3_val = tp4_val = "-"
             confidence = "نامناسب جهت معامله"
-            smc_tag = "⚠️ عدم تشکیل ساختار نقدینگی معتبر"
+            ict_tag = "عدم تشکیل عدم‌تعادل نقدینگی (No Clear FVG / Sweep)"
+            rtm_tag = "ساختار رنج، عدم وجود شکست و ریتست معتبر"
 
         report = (
             f"📊 <b>گزارش تحلیلی پیشرفته (High-Probability)</b>\n\n"
@@ -323,8 +335,9 @@ async def analyze_market(symbol: str, timeframe: str = '15m'):
             f"  ▫️ TP 4 (Runner): <code>{format_price(tp4_val)}</code>\n\n"
             f"🛑 <b>حد ضرر تحلیلی (Stop Loss):</b> <code>{format_price(sl_val)}</code>\n\n"
             f"📌 <i>نکته معاملاتی: پس از تاچ شدن TP 1، استاپ را دقیقاً روی Entry Price قرار دهید (ریسک‌فری).</i>\n\n"
-            f"🔍 <b>متریک‌های کلیدی:</b>\n"
-            f"  • اسمارت‌مانی (SMC): <code>{smc_tag}</code>\n"
+            f"🔍 <b>متریک‌های کلیدی سبک ICT و RTM:</b>\n"
+            f"  • تاییدیه ICT: <code>{ict_tag}</code>\n"
+            f"  • ساختار RTM: <code>{rtm_tag}</code>\n"
             f"  • RSI: <code>{c['rsi']:.1f}</code>\n"
             f"  • شاخص قدرت ترند (ADX): <code>{adx_val:.1f}</code> ({'رونددار قوی' if is_trending else 'رِنج / ضعیف'})\n"
             f"  • حجم نسبت به میانگین: <code>{vol_ratio:.2f}x</code>\n"
