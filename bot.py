@@ -1,4 +1,4 @@
-import oss
+import os
 import asyncio
 import logging
 from aiohttp import web
