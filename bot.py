@@ -13,8 +13,8 @@ logging.basicConfig(level=logging.INFO)
 # خواندن امن توکن تلگرام
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
-# صرافی MEXC
-exchange = ccxt.mexc({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
+# صرافی MEXC با تایم‌اوت ۱۰ ثانیه‌ای جهت عدم معلق ماندن
+exchange = ccxt.mexc({'enableRateLimit': True, 'timeout': 10000, 'options': {'defaultType': 'swap'}})
 
 dp = Dispatcher()
 
@@ -49,16 +49,16 @@ def get_timeframe_keyboard(symbol):
 
 async def analyze_market(symbol: str, timeframe: str = '15m'):
     try:
-        limit = 250
+        limit = 100
         ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        if not ohlcv or len(ohlcv) < 50:
-            return "❌ داده‌های کافی از صرافی دریافت نشد. لطفاً مجدداً تلاش کنید."
+        if not ohlcv or len(ohlcv) < 30:
+            return "❌ داده‌های کافی از صرافی دریافت نشد. لطفاً از نمادهای معتبر استفاده کنید."
 
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
         # محاسبات اندیکاتورها و میانگین‌ها
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
-        df['ema200'] = df['close'].ewm(span=200, adjust=False).mean() if len(df) >= 200 else df['close'].ewm(span=50, adjust=False).mean()
+        df['ema200'] = df['close'].ewm(span=len(df), adjust=False).mean()
         
         # محاسبه RSI
         delta = df['close'].diff()
@@ -137,20 +137,20 @@ async def analyze_market(symbol: str, timeframe: str = '15m'):
             tp4 = round(current_price + (3.5 * atr_val), 4)
 
         report = (
-            f"📊 **گزارش تحلیل تکنیکال و پرایس‌اکشن**\n\n"
-            f"🔹 **نماد:** `{symbol}`\n"
-            f"⏱ **تایم‌فریم:** `{timeframe}`\n"
-            f"💵 **Entry Price:** `{current_price}`\n"
-            f"📈 **جهت پیشنهادی:** {direction}\n\n"
-            f"🎯 **اهداف سود (Take Profit):**\n"
-            f"  ▫️ TP 1: `{tp1}`\n"
-            f"  ▫️ TP 2: `{tp2}`\n"
-            f"  ▫️ TP 3: `{tp3}`\n"
-            f"  ▫️ TP 4: `{tp4}`\n\n"
-            f"🛑 **حد ضرر (Stop Loss):** `{sl}`\n\n"
-            f"🔍 **وضعیت پرایس‌اکشن:** {fvg_state}\n"
-            f"📊 **شاخص RSI:** `{rsi_val:.2f}`\n"
-            f"📉 **وضعیت MACD:** `{'مثبت/گاوی' if macd_val > macd_sig else 'منفی/خرسی'}`"
+            f"📊 <b>گزارش تحلیل تکنیکال و پرایس‌اکشن</b>\n\n"
+            f"🔹 <b>نماد:</b> <code>{symbol}</code>\n"
+            f"⏱ <b>تایم‌فریم:</b> <code>{timeframe}</code>\n"
+            f"💵 <b>Entry Price:</b> <code>{current_price}</code>\n"
+            f"📈 <b>جهت پیشنهادی:</b> {direction}\n\n"
+            f"🎯 <b>اهداف سود (Take Profit):</b>\n"
+            f"  ▫️ TP 1: <code>{tp1}</code>\n"
+            f"  ▫️ TP 2: <code>{tp2}</code>\n"
+            f"  ▫️ TP 3: <code>{tp3}</code>\n"
+            f"  ▫️ TP 4: <code>{tp4}</code>\n\n"
+            f"🛑 <b>حد ضرر (Stop Loss):</b> <code>{sl}</code>\n\n"
+            f"🔍 <b>وضعیت پرایس‌اکشن:</b> {fvg_state}\n"
+            f"📊 <b>شاخص RSI:</b> <code>{rsi_val:.2f}</code>\n"
+            f"📉 <b>وضعیت MACD:</b> {'مثبت/گاوی' if macd_val > macd_sig else 'منفی/خرسی'}"
         )
         return report
 
@@ -177,19 +177,22 @@ async def process_symbol_select(callback_query: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith('tf:'))
 async def process_timeframe_select(callback_query: types.CallbackQuery):
-    _, symbol, tf = callback_query.data.split(':')
+    await callback_query.answer()
+    # استخراج امن نماد و تایم‌فریم بدون باگ جداکننده دو نقطه
+    data_str = callback_query.data[3:]  # حذف 'tf:'
+    symbol, tf = data_str.rsplit(':', 1)
+    
     await callback_query.message.edit_text("⏳ در حال دریافت داده‌ها و تحلیل هوشمند... لطفاً شکیبا باشید.")
     result = await analyze_market(symbol, tf)
-    await callback_query.message.edit_text(result, parse_mode="Markdown", reply_markup=get_timeframe_keyboard(symbol))
-    await callback_query.answer()
+    await callback_query.message.edit_text(result, parse_mode="HTML", reply_markup=get_timeframe_keyboard(symbol))
 
 @dp.callback_query(lambda c: c.data == 'back_to_symbols')
 async def process_back(callback_query: types.CallbackQuery):
+    await callback_query.answer()
     await callback_query.message.edit_text(
         "ارز مورد نظر خود را برای تحلیل انتخاب کنید:",
         reply_markup=get_symbols_keyboard()
     )
-    await callback_query.answer()
 
 @dp.message()
 async def process_custom_symbol(message: types.Message):
