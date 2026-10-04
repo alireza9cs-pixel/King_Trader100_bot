@@ -1,19 +1,25 @@
 import os
+import io
 import asyncio
 import logging
 from aiohttp import web
 import ccxt.async_support as ccxt
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # جلوگیری از ارور نبود GUI روی سرور
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 logging.basicConfig(level=logging.INFO)
 
-# توکن ربات از متغیرهای محیطی خوانده می‌شود
+# توکن ربات از متغیرهای محیطی سیستم خوانده می‌شود (یا مستقیماً توکن را در گیومه بگذارید)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 # صرافی MEXC برای قراردادهای فیوچرز
@@ -46,6 +52,9 @@ def get_timeframe_keyboard(symbol):
             InlineKeyboardButton(text="1D", callback_data=f"tf:{symbol}:1d")
         ],
         [
+            InlineKeyboardButton(text="📊 چارت والیوم پروفایل (Volume Profile)", callback_data=f"vp:{symbol}:1h")
+        ],
+        [
             InlineKeyboardButton(text="🔙 بازگشت به لیست ارزها", callback_data="back_to_symbols")
         ]
     ])
@@ -69,9 +78,106 @@ def format_price(price):
     except:
         return str(price)
 
+# ----------------- ماژول چارت والیوم پروفایل -----------------
+async def generate_volume_profile_chart(symbol: str, timeframe: str = '1h'):
+    try:
+        limit = 200
+        ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        if not ohlcv or len(ohlcv) < 50:
+            return None, "داده‌های کافی جهت رسم پروفایل حجم موجود نیست."
+
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+        # تقسیم دامنه قیمت به سطوح مختلف
+        price_min = df['low'].min()
+        price_max = df['high'].max()
+        bins = 45
+        price_bins = np.linspace(price_min, price_max, bins)
+        vol_profile = np.zeros(len(price_bins) - 1)
+
+        # تخصیص حجم معاملات به قیمت‌ها
+        for _, row in df.iterrows():
+            idx = np.digitize((row['open'] + row['close'] + row['high'] + row['low']) / 4, price_bins) - 1
+            if 0 <= idx < len(vol_profile):
+                vol_profile[idx] += row['volume']
+
+        # محاسبه POC
+        poc_idx = np.argmax(vol_profile)
+        poc_price = (price_bins[poc_idx] + price_bins[poc_idx + 1]) / 2
+
+        # محاسبه Value Area (70 درصد حجم کل)
+        total_vol = vol_profile.sum()
+        va_target = total_vol * 0.70
+        sorted_indices = np.argsort(vol_profile)[::-1]
+        cum_vol = 0
+        va_indices = []
+        for idx in sorted_indices:
+            cum_vol += vol_profile[idx]
+            va_indices.append(idx)
+            if cum_vol >= va_target:
+                break
+
+        val_price = price_bins[min(va_indices)]
+        vah_price = price_bins[max(va_indices) + 1]
+
+        # رسم چارت
+        plt.style.use('dark_background')
+        fig, (ax_main, ax_vp) = plt.subplots(
+            1, 2, figsize=(12, 6), sharey=True,
+            gridspec_kw={'width_ratios': [4, 1.2], 'wspace': 0.05}
+        )
+
+        for i, row in df.iterrows():
+            color = '#26a69a' if row['close'] >= row['open'] else '#ef5350'
+            ax_main.plot([row['datetime'], row['datetime']], [row['low'], row['high']], color=color, linewidth=1)
+            ax_main.plot([row['datetime'], row['datetime']], [row['open'], row['close']], color=color, linewidth=3)
+
+        # خطوط POC و VAH و VAL
+        ax_main.axhline(poc_price, color='#ff1744', linestyle='--', linewidth=1.5, label=f'POC: {format_price(poc_price)}')
+        ax_main.axhline(vah_price, color='#00e676', linestyle=':', linewidth=1.3, label=f'VAH: {format_price(vah_price)}')
+        ax_main.axhline(val_price, color='#ff9100', linestyle=':', linewidth=1.3, label=f'VAL: {format_price(val_price)}')
+        ax_main.set_title(f"Volume Profile Chart: {symbol} ({timeframe})", fontsize=13, color='white', pad=10)
+        ax_main.legend(loc='upper left', facecolor='#1e1e1e', edgecolor='none')
+        ax_main.grid(True, linestyle='--', alpha=0.15)
+        ax_main.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+        plt.setp(ax_main.get_xticklabels(), rotation=30, ha='right')
+
+        # ستون‌های والیوم پروفایل
+        bin_height = price_bins[1] - price_bins[0]
+        bin_centers = price_bins[:-1] + (bin_height / 2)
+        bar_colors = ['#ff5252' if i == poc_idx else '#42a5f5' for i in range(len(vol_profile))]
+
+        ax_vp.barh(bin_centers, vol_profile, height=bin_height * 0.9, color=bar_colors, alpha=0.75)
+        ax_vp.set_xlabel("Volume", color='white', fontsize=10)
+        ax_vp.grid(True, linestyle='--', alpha=0.15)
+        ax_vp.tick_params(left=False, labelleft=False)
+
+        buf = io.BytesIO()
+        plt.tight_layout()
+        plt.savefig(buf, format='png', dpi=120)
+        buf.seek(0)
+        plt.close(fig)
+
+        caption = (
+            f"📊 <b>تحلیل والیوم پروفایل (Volume Profile)</b>\n\n"
+            f"🔹 <b>نماد:</b> <code>{symbol}</code>\n"
+            f"⏱ <b>تایم‌فریم مبنا:</b> <code>{timeframe}</code>\n\n"
+            f"📍 <b>خط کنترل (POC - بیشترین حجم معامله شده):</b>\n"
+            f"👉 <code>{format_price(poc_price)}</code>\n\n"
+            f"🔺 <b>محدوده بالای ارزش (VAH):</b> <code>{format_price(vah_price)}</code>\n"
+            f"🔻 <b>محدوده پایین ارزش (VAL):</b> <code>{format_price(val_price)}</code>\n\n"
+            f"💡 <i>نکته: قیمت تمایل دارد به سمت POC برگردد. خروج تثبیت‌شده از محدوده VAH/VAL می‌تواند نشانه جهت‌گیری اصلی بازار باشد.</i>"
+        )
+        return buf, caption
+
+    except Exception as e:
+        logging.error(f"VP generation error: {e}")
+        return None, f"❌ خطا در ساخت والیوم پروفایل: {str(e)}"
+
+# ----------------- الگوریتم تحلیل تکنیکال -----------------
 async def analyze_market(symbol: str, timeframe: str = '15m'):
     try:
-        # دریافت کندل‌های کافی جهت محاسبه دقیق اندیکاتورها
         limit = 350
         ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         if not ohlcv or len(ohlcv) < 220:
@@ -79,12 +185,12 @@ async def analyze_market(symbol: str, timeframe: str = '15m'):
 
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
-        # محاسبه میانگین‌های متحرک نمایی (EMAs)
+        # محاسبه EMA
         df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
         
-        # محاسبه RSI بر اساس Wilder Smoothing
+        # محاسبه RSI
         delta = df['close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -107,84 +213,74 @@ async def analyze_market(symbol: str, timeframe: str = '15m'):
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         df['atr'] = tr.rolling(window=14).mean()
 
-        # محاسبه ADX (شاخص قدرت روند برای فیلتر کردن رِنج‌های پرضرر)
+        # محاسبه ADX
         plus_dm = df['high'].diff()
         minus_dm = -df['low'].diff()
-        plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
-        minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
+        plus_dm = pd.Series(np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0))
+        minus_dm = pd.Series(np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0))
         
         tr_s = tr.rolling(window=14).sum()
-        plus_di = 100 * (pd.Series(plus_dm).rolling(window=14).sum() / (tr_s + 1e-9))
-        minus_di = 100 * (pd.Series(minus_dm).rolling(window=14).sum() / (tr_s + 1e-9))
+        plus_di = 100 * (plus_dm.rolling(window=14).sum() / (tr_s + 1e-9))
+        minus_di = 100 * (minus_dm.rolling(window=14).sum() / (tr_s + 1e-9))
         dx = (abs(plus_di - minus_di) / (plus_di + minus_di + 1e-9)) * 100
         df['adx'] = dx.rolling(window=14).mean()
 
-        # میانگین متحرک حجم برای اعتبارسنجی شکست‌ها
         df['vol_ma'] = df['volume'].rolling(window=20).mean()
 
-        # برای عدم نوسان و حذف Repainting، تحلیل روی آخرین کندل تثبیت‌شده (c) انجام می‌شود
         c = df.iloc[-2]
         prev_c = df.iloc[-3]
-        current_live_price = df['close'].iloc[-1]  # قیمت زنده لحظه‌ای
+        current_live_price = df['close'].iloc[-1]
         
         atr_val = c['atr'] if not pd.isna(c['atr']) else current_live_price * 0.015
         adx_val = c['adx'] if not pd.isna(c['adx']) else 20.0
         vol_ratio = (c['volume'] / c['vol_ma']) if c['vol_ma'] > 0 else 1.0
 
-        # --- الگوریتم سیگنال‌دهی فوق‌دقیق (High-Probability Filter) ---
         long_score = 0
         short_score = 0
 
-        # ۱. فیلتر هم‌جهتی با EMA200 (مادر تمام ترندها)
+        # فیلتر ترند کلان
         trend_bullish = c['close'] > c['ema200']
         trend_bearish = c['close'] < c['ema200']
 
-        # ۲. هم‌پوشانی میانگین‌های سریع و میان‌مدت (EMA Confluence)
         if c['ema20'] > c['ema50']:
             long_score += 1.5
         elif c['ema20'] < c['ema50']:
             short_score += 1.5
 
-        # ۳. موقعیت قیمت نسبت به EMA50
         if c['close'] > c['ema50']:
             long_score += 1.0
         else:
             short_score += 1.0
 
-        # ۴. فیلتر مومنتوم MACD و شیب هیستوگرام
         if c['macd'] > c['macd_signal']:
             long_score += 1.0
-            if c['macd_hist'] > prev_c['macd_hist']:  # شتاب مثبت
+            if c['macd_hist'] > prev_c['macd_hist']:
                 long_score += 0.5
         elif c['macd'] < c['macd_signal']:
             short_score += 1.0
-            if c['macd_hist'] < prev_c['macd_hist']:  # شتاب منفی
+            if c['macd_hist'] < prev_c['macd_hist']:
                 short_score += 0.5
 
-        # ۵. تاییدیه RSI در ناحیه شتاب بدون اشباع
         if 52 <= c['rsi'] <= 68:
             long_score += 1.5
-        elif c['rsi'] > 75:  # ریسک اصلاح سنگین
+        elif c['rsi'] > 75:
             long_score -= 2.0
 
         if 32 <= c['rsi'] <= 48:
             short_score += 1.5
-        elif c['rsi'] < 25:  # ریسک برگشت صعودی
+        elif c['rsi'] < 25:
             short_score -= 2.0
 
-        # ۶. تاییدیه قدرت روند (ADX): اگر روند قوی نباشد، جریمه اعمال می‌شود
         is_trending = adx_val >= 21
         has_volume = vol_ratio >= 0.95
 
-        # شرط ورود بدون خطا: هم‌جهت با ترند ماکرو + امتیاز بالا + تایید روند
         is_high_prob_long = trend_bullish and (long_score >= 4.0) and is_trending and has_volume
         is_high_prob_short = trend_bearish and (short_score >= 4.0) and is_trending and has_volume
 
-        # محاسبه تارگت‌ها بر اساس ATR با هدف رسیدن به وین‌ریت حداکثری در TP1 و TP2
         if is_high_prob_long:
             direction = "🟢 صعودی قوی (Strong Long) ⭐⭐⭐"
             sl_val = current_live_price - (1.1 * atr_val)
-            tp1_val = current_live_price + (1.0 * atr_val)   # احتمال تحقق بالای ۸۵٪
+            tp1_val = current_live_price + (1.0 * atr_val)
             tp2_val = current_live_price + (1.8 * atr_val)
             tp3_val = current_live_price + (2.8 * atr_val)
             tp4_val = current_live_price + (4.0 * atr_val)
@@ -192,7 +288,7 @@ async def analyze_market(symbol: str, timeframe: str = '15m'):
         elif is_high_prob_short:
             direction = "🔴 نزولی قوی (Strong Short) ⭐⭐⭐"
             sl_val = current_live_price + (1.1 * atr_val)
-            tp1_val = current_live_price - (1.0 * atr_val)   # احتمال تحقق بالای ۸۵٪
+            tp1_val = current_live_price - (1.0 * atr_val)
             tp2_val = current_live_price - (1.8 * atr_val)
             tp3_val = current_live_price - (2.8 * atr_val)
             tp4_val = current_live_price - (4.0 * atr_val)
@@ -228,6 +324,7 @@ async def analyze_market(symbol: str, timeframe: str = '15m'):
         logging.error(f"Analysis error: {e}")
         return f"❌ خطایی در تحلیل {symbol} رخ داد: {str(e)}"
 
+# ----------------- هندلرهای تلگرام -----------------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
@@ -239,7 +336,7 @@ async def cmd_start(message: types.Message):
 async def process_symbol_select(callback_query: types.CallbackQuery):
     symbol = callback_query.data.split('sym:')[1]
     await callback_query.message.edit_text(
-        f"ارز انتخابی: <b>{symbol}</b>\nلطفاً تایم‌فریم مورد نظر را انتخاب کنید:",
+        f"ارز انتخابی: <b>{symbol}</b>\nلطفاً تایم‌فریم یا ابزار مورد نظر را انتخاب کنید:",
         reply_markup=get_timeframe_keyboard(symbol)
     )
     await callback_query.answer()
@@ -253,6 +350,22 @@ async def process_timeframe_select(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text("⏳ در حال دریافت داده‌ها و تحلیل هوشمند... لطفاً شکیبا باشید.")
     result = await analyze_market(symbol, tf)
     await callback_query.message.edit_text(result, reply_markup=get_timeframe_keyboard(symbol))
+
+@dp.callback_query(lambda c: c.data.startswith('vp:'))
+async def process_volume_profile(callback_query: types.CallbackQuery):
+    await callback_query.answer("در حال آماده‌سازی تصویر...")
+    data_str = callback_query.data[3:]
+    symbol, tf = data_str.rsplit(':', 1)
+    
+    wait_msg = await callback_query.message.answer("⏳ در حال پردازش داده‌های حجم و تولید چارت...")
+    buf, caption = await generate_volume_profile_chart(symbol, tf)
+    
+    await wait_msg.delete()
+    if buf:
+        photo = BufferedInputFile(buf.getvalue(), filename=f"vp_{symbol.replace('/', '_')}.png")
+        await callback_query.message.answer_photo(photo=photo, caption=caption)
+    else:
+        await callback_query.message.answer(caption)
 
 @dp.callback_query(lambda c: c.data == 'back_to_symbols')
 async def process_back(callback_query: types.CallbackQuery):
@@ -271,7 +384,7 @@ async def process_custom_symbol(message: types.Message):
         symbol = raw_text
     
     await message.answer(
-        f"ارز انتخابی: <b>{symbol}</b>\nلطفاً تایم‌فریم مورد نظر را انتخاب کنید:",
+        f"ارز انتخابی: <b>{symbol}</b>\nلطفاً تایم‌فریم یا ابزار مورد نظر را انتخاب کنید:",
         reply_markup=get_timeframe_keyboard(symbol)
     )
 
@@ -291,10 +404,9 @@ async def start_web_server():
 
 async def main():
     if not BOT_TOKEN:
-        logging.error("BOT_TOKEN is not set in environment variables!")
+        logging.error("BOT_TOKEN is not set in environment variables! لطفاً توکن ربات تلگرام را ست کنید.")
         return
 
-    # استفاده از DefaultBotProperties در aiogram 3.x
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     await start_web_server()
     logging.info("Starting Telegram Bot Polling...")
