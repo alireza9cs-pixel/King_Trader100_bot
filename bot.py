@@ -1,217 +1,311 @@
+# -*- coding: utf-8 -*-
 import os
+import io
 import asyncio
 import logging
-from aiohttp import web
-import ccxt.async_support as ccxt
-import pandas as pd
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# --- کتابخانه‌های اضافه شده برای رسم نمودار ---
 import numpy as np
+import pandas as pd
+import ccxt.async_support as ccxt
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from io import BytesIO
+import matplotlib.dates as mdates
+from aiohttp import web
 
-logging.basicConfig(level=logging.INFO)
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# متغیر برای نگهداری آخرین تایم‌فریم کاربر
-user_last_tf = {}
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s | %(levelname)s | %(message)s")
+log = logging.getLogger("bot")
 
-# خواندن امن توکن تلگرام
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
-
-# صرافی MEXC با تایم‌اوت ۱۰ ثانیه‌ای جهت عدم معلق ماندن
-exchange = ccxt.mexc({'enableRateLimit': True, 'timeout': 10000, 'options': {'defaultType': 'swap'}})
-
+if not TOKEN:
+    raise SystemExit("BOT_TOKEN env var not set")
+bot = Bot(token=TOKEN, parse_mode=ParseMode.MARKDOWN)
 dp = Dispatcher()
 
+# ---------------- Exchange ----------------
+exchange = ccxt.mexc({
+    "enableRateLimit": True,
+    "timeout": 10000,
+    "options": {"defaultType": "swap"},
+})
+
+TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"]
+
+# ---------------- Keyboards ----------------
 def get_symbols_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="بیت‌کوین (BTC)", callback_data="sym:BTC/USDT:USDT"),
-            InlineKeyboardButton(text="اتریوم (ETH)", callback_data="sym:ETH/USDT:USDT")
-        ],
-        [
-            InlineKeyboardButton(text="سولانا (SOL)", callback_data="sym:SOL/USDT:USDT"),
-            InlineKeyboardButton(text="پپه (PEPE)", callback_data="sym:PEPE/USDT:USDT")
-        ]
+        [InlineKeyboardButton(text="BTC/USDT", callback_data="sym:BTC/USDT"),
+         InlineKeyboardButton(text="ETH/USDT", callback_data="sym:ETH/USDT")],
+        [InlineKeyboardButton(text="SOL/USDT", callback_data="sym:SOL/USDT"),
+         InlineKeyboardButton(text="PEPE/USDT", callback_data="sym:PEPE/USDT")],
+        [InlineKeyboardButton(text="AKE/USDT (MEXC)", callback_data="sym:AKE/USDT:USDT")],
     ])
 
-def get_timeframe_keyboard(symbol):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="1m", callback_data=f"tf:{symbol}:1m"),
-            InlineKeyboardButton(text="5m", callback_data=f"tf:{symbol}:5m"),
-            InlineKeyboardButton(text="15m", callback_data=f"tf:{symbol}:15m")
-        ],
-        [
-            InlineKeyboardButton(text="1h", callback_data=f"tf:{symbol}:1h"),
-            InlineKeyboardButton(text="4h", callback_data=f"tf:{symbol}:4h"),
-            InlineKeyboardButton(text="1D", callback_data=f"tf:{symbol}:1d")
-        ],
-        # --- اضافه شده: دکمه Volume Profile ---
-        [
-            InlineKeyboardButton(text="📊 Volume Profile", callback_data=f"vp:{symbol}")
-        ],
-        [
-            InlineKeyboardButton(text="🔙 بازگشت به لیست ارزها", callback_data="back_to_symbols")
-        ]
-    ])
+def get_timeframe_keyboard(symbol: str):
+    rows, row = [], []
+    for tf in TIMEFRAMES:
+        row.append(InlineKeyboardButton(text=tf.upper() if tf == "1d" else tf,
+                                        callback_data=f"tf:{tf}:{symbol}"))
+        if len(row) == 2:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="📊 Volume Profile",
+                                      callback_data=f"vp:1h:{symbol}")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت به لیست ارزها", callback_data="back_symbols")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
-async def analyze_market(symbol: str, timeframe: str = '15m'):
+# ---------------- Indicators ----------------
+def calculate_rsi(df, period=14):
+    delta = df["close"].diff()
+    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / (loss + 1e-9)
+    return 100 - (100 / (1 + rs))
+
+def calculate_macd(df, fast=12, slow=26, signal=9):
+    macd_line = (df["close"].ewm(span=fast, adjust=False).mean()
+                 - df["close"].ewm(span=slow, adjust=False).mean())
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    return macd_line.iloc[-1], signal_line.iloc[-1]
+
+def calculate_volume_profile(df, bins=50, value_area=0.70):
+    lo, hi = float(df["low"].min()), float(df["high"].max())
+    if hi <= lo:
+        return float(df["close"].iloc[-1]), hi, lo
+    bin_edges = np.linspace(lo, hi, bins + 1)
+    vol = np.zeros(bins)
+    for _, r in df.iterrows():
+        b0 = int(np.searchsorted(bin_edges, r["low"], "right") - 1)
+        b1 = int(np.searchsorted(bin_edges, r["high"], "left"))
+        b0, b1 = max(0, b0), min(bins, max(b1, b0 + 1))
+        vol[b0:b1] += float(r["volume"]) / (b1 - b0)
+    total = vol.sum()
+    poc_i = int(vol.argmax())
+    lo_i, hi_i = poc_i, poc_i
+    acc = vol[poc_i]
+    while acc < value_area * total and (lo_i > 0 or hi_i < bins - 1):
+        left = vol[lo_i - 1] if lo_i > 0 else -1
+        right = vol[hi_i + 1] if hi_i < bins - 1 else -1
+        if right >= left:
+            hi_i += 1; acc += max(right, 0)
+        else:
+            lo_i -= 1; acc += max(left, 0)
+    poc = (bin_edges[poc_i] + bin_edges[poc_i + 1]) / 2
+    vah = (bin_edges[hi_i] + bin_edges[min(hi_i + 1, bins)]) / 2
+    val = (bin_edges[lo_i] + bin_edges[lo_i + 1]) / 2
+    return poc, vah, val
+
+# ---------------- Volume Profile Chart ----------------
+def render_vp_chart(df, symbol, timeframe, poc, vah, val) -> bytes:
+    plt.style.use("dark_background")
+    fig = plt.figure(figsize=(11, 6), facecolor="#11131a")
+    ax = fig.add_axes([0.08, 0.1, 0.68, 0.82])
+    axp = ax.twinx()
+    x = pd.to_datetime(df["timestamp"], unit="ms")
+
+    up = df["close"] >= df["open"]
+    ax.vlines(x, df["low"], df["high"], color="#26a69a", lw=0.7, alpha=0.85)
+    ax.vlines(x[up], df["open"][up], df["close"][up], color="#26a69a", lw=2.4)
+    ax.vlines(x[~up], df["open"][~up], df["close"][~up], color="#ef5350", lw=2.4)
+
+    axp.hist(df["volume"], bins=40, orientation="horizontal",
+             color="#3a4a6b", alpha=0.5, height=0.9)
+    axp.set_yticks([])
+    axp.set_ylim(ax.get_ylim())
+
+    for price, color, label in ((vah, "#f0b90b", "VAH"),
+                                (poc, "#00e676", "POC"),
+                                (val, "#f0b90b", "VAL")):
+        ax.axhline(price, color=color, lw=1.5, ls="--", alpha=0.95)
+        ax.text(x.iloc[0], price, f" {label}: {price:g}",
+                color=color, fontsize=9, va="bottom", fontweight="bold")
+
+    ax.axhspan(val, vah, color="#f0b90b", alpha=0.08)
+
+    ax.set_facecolor("#11131a")
+    ax.set_title(f"Volume Profile (250 Candles) | {symbol} | {timeframe}",
+                 color="white", fontsize=13, fontweight="bold", pad=10)
+    ax.tick_params(colors="#9aa3b5")
+    ax.grid(color="#23283a", lw=0.5, alpha=0.5)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
+    fig.text(0.78, 0.03, "70% Value Area", color="#f0b90b", fontsize=9)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=130, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+async def send_volume_profile(message: types.Message, symbol: str, timeframe: str):
     try:
-        limit = 250 # افزایش لیمیت برای محاسبات بهتر
-        ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        if not ohlcv or len(ohlcv) < 30:
-            return "❌ داده‌های کافی از صرافی دریافت نشد."
-
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        
-        # محاسبات اندیکاتورها (دقیقاً کدهای قبلی شما)
-        df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
-        df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
-        
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / (loss + 1e-9)
-        df['rsi'] = 100 - (100 / (1 + rs))
-
-        ema12 = df['close'].ewm(span=12, adjust=False).mean()
-        ema26 = df['close'].ewm(span=26, adjust=False).mean()
-        df['macd'] = ema12 - ema26
-        df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-
-        tr1 = df['high'] - df['low']
-        tr2 = (df['high'] - df['close'].shift(1)).abs()
-        tr3 = (df['low'] - df['close'].shift(1)).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        df['atr'] = tr.rolling(window=14).mean()
-
-        current_price = df['close'].iloc[-1]
-        rsi_val = df['rsi'].iloc[-1]
-        macd_val = df['macd'].iloc[-1]
-        macd_sig = df['macd_signal'].iloc[-1]
-        ema50_val = df['ema50'].iloc[-1]
-        ema200_val = df['ema200'].iloc[-1]
-        atr_val = df['atr'].iloc[-1] if not pd.isna(df['atr'].iloc[-1]) else current_price * 0.015
-
-        score = 0
-        score += 1 if current_price > ema50_val else -1
-        score += 1 if current_price > ema200_val else -1
-        score += 1 if macd_val > macd_sig else -1
-        if rsi_val > 52: score += 1
-        elif rsi_val < 48: score -= 1
-
-        if score >= 2:
-            direction = "🟢 صعودی (Bullish)"
-            sl = round(current_price - (1.5 * atr_val), 4)
-            tp1, tp2, tp3, tp4 = round(current_price + (1.0 * atr_val), 4), round(current_price + (2.0 * atr_val), 4), round(current_price + (3.2 * atr_val), 4), round(current_price + (4.5 * atr_val), 4)
-        elif score <= -2:
-            direction = "🔴 نزولی (Bearish)"
-            sl = round(current_price + (1.5 * atr_val), 4)
-            tp1, tp2, tp3, tp4 = round(current_price - (1.0 * atr_val), 4), round(current_price - (2.0 * atr_val), 4), round(current_price - (3.2 * atr_val), 4), round(current_price - (4.5 * atr_val), 4)
-        else:
-            direction = "⚪️ خنثی"
-            sl = round(current_price - atr_val, 4)
-            tp1, tp2, tp3, tp4 = round(current_price + atr_val, 4), round(current_price + (1.8 * atr_val), 4), round(current_price + (2.5 * atr_val), 4), round(current_price + (3.5 * atr_val), 4)
-
-        return f"📊 <b>تحلیل تکنیکال</b>\n\n🔹 <b>نماد:</b> <code>{symbol}</code>\n⏱ <b>تایم‌فریم:</b> <code>{timeframe}</code>\n💵 <b>Entry:</b> <code>{current_price}</code>\n📈 <b>جهت:</b> {direction}\n\n🎯 <b>TP:</b> {tp1}, {tp2}\n🛑 <b>SL:</b> <code>{sl}</code>"
-
+        ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=250)
+        if not ohlcv:
+            await message.answer("❌ داده‌ای برای این جفت‌ارز یافت نشد.")
+            return
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        poc, vah, val = calculate_volume_profile(df, bins=50, value_area=0.70)
+        png = render_vp_chart(df, symbol, timeframe, poc, vah, val)
+        photo = types.BufferedInputFile(png, filename="volume_profile.png")
+        caption = (f"📊 *Volume Profile* — `{symbol}` ({timeframe})\n\n"
+                   f"🎯 POC: `{poc:.6g}`\n"
+                   f"⬆️ VAH: `{vah:.6g}`\n"
+                   f"⬇️ VAL: `{val:.6g}`\n"
+                   f"🧮 Value Area: 70% (250 کندل)")
+        await message.answer_photo(photo, caption=caption)
     except Exception as e:
-        return f"❌ خطا: {str(e)}"
+        log.exception("VP error")
+        await message.answer(f"❌ خطا در رسم Volume Profile: `{e}`")
 
-# --- توابع اضافه شده برای Volume Profile ---
-def generate_vp_chart(df):
-    n_bins = 60
-    low, high = df["low"].min(), df["high"].max()
-    edges = np.linspace(low, high, n_bins + 1)
-    centers = (edges[:-1] + edges[1:]) / 2
-    vol_bins = np.zeros(n_bins)
-    for _, row in df.iterrows():
-        left = np.searchsorted(edges, row["low"]) - 1
-        right = np.searchsorted(edges, row["high"])
-        vol_bins[max(left, 0):min(right, n_bins)] += row["volume"] / max(right - left, 1)
+# ---------------- Full SMC/ICT Analysis ----------------
+async def analyze_market(symbol: str, timeframe: str):
+    try:
+        ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=100)
+        if not ohlcv:
+            return "❌ خطا: داده‌ای برای ارز یافت نشد.", None
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        last = df.iloc[-1]
+        price = float(last["close"])
+        high_24h = float(df["high"].max())
+        low_24h = float(df["low"].min())
+        rsi = float(calculate_rsi(df).iloc[-1])
+        macd, sig = calculate_macd(df)
+        poc, vah, val = calculate_volume_profile(df, bins=30, value_area=0.70)
 
-    total_vol = vol_bins.sum()
-    poc_idx = np.argmax(vol_bins)
-    target = total_vol * 0.70
-    acc = vol_bins[poc_idx]
-    included = np.zeros(n_bins, dtype=bool)
-    included[poc_idx] = True
-    l, r = poc_idx - 1, poc_idx + 1
-    while acc < target and (l >= 0 or r < n_bins):
-        if r < n_bins and (l < 0 or vol_bins[r] > vol_bins[l]):
-            included[r] = True; acc += vol_bins[r]; r += 1
+        # SMC: FVG & Order Block
+        fvg = "✅ فعال (Bullish FVG)" if last["low"] > df["high"].iloc[-3] \
+              else "✅ فعال (Bearish FVG)" if last["high"] < df["low"].iloc[-3] \
+              else "❌ غیرفعال"
+        ob = f"`{df['low'].tail(5).min():.4f} - {df['high'].tail(5).max():.4f}`"
+
+        # AMD Phase
+        rng = high_24h - low_24h
+        if price < low_24h + rng * 0.25:
+            amd = "Accumulation (انباشت)"
+        elif price < low_24h + rng * 0.75:
+            amd = "Manipulation (دستکاری)"
         else:
-            included[l] = True; acc += vol_bins[l]; l -= 1
-    
-    poc, val, vah = centers[poc_idx], centers[included].min(), centers[included].max()
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.barh(centers, vol_bins, height=(centers[1]-centers[0])*0.8, color='skyblue', alpha=0.6)
-    ax.axhline(poc, color='green', label=f'POC: {poc:.4f}')
-    ax.axhline(val, color='red', linestyle='--', label=f'VAL: {val:.4f}')
-    ax.axhline(vah, color='red', linestyle='--', label=f'VAH: {vah:.4f}')
-    ax.legend(); ax.set_title("Volume Profile (Fixed Range)")
-    buf = BytesIO()
-    fig.savefig(buf, format='png'); buf.seek(0)
-    return buf, poc, val, vah
+            amd = "Distribution (توزیع)"
 
-@dp.callback_query(lambda c: c.data.startswith('vp:'))
-async def process_vp_select(callback_query: types.CallbackQuery):
-    symbol = callback_query.data.split('vp:')[1]
-    tf = user_last_tf.get(callback_query.from_user.id, "15m")
-    await callback_query.answer("در حال محاسبه...")
-    ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=tf, limit=250)
-    df = pd.DataFrame(ohlcv, columns=['t', 'o', 'high', 'low', 'c', 'volume'])
-    img_buf, poc, val, vah = generate_vp_chart(df)
-    await callback_query.message.answer_photo(
-        photo=types.BufferedInputFile(img_buf.read(), "vp.png"),
-        caption=f"📊 Volume Profile\nPOC: {poc:.4f}\nVAL: {val:.4f}\nVAH: {vah:.4f}"
-    )
+        bullish = rsi > 50 and macd > sig
+        sentiment = "🟢 صعودی (Bullish)" if bullish else "🔴 نزولی (Bearish)"
+        direction = "LONG 📈" if bullish else "SHORT 📉"
 
-# --- باقی کدهای شما ---
+        fib_0618 = high_24h - 0.618 * rng
+        entry = price
+        sl = entry * 0.985 if bullish else entry * 1.015
+        tps = [entry * m for m in ((1.01, 1.022, 1.035, 1.05) if bullish else (0.99, 0.978, 0.965, 0.95))]
+        lev = "10x - 20x" if rsi < 68 else "3x - 5x (احتیاط)"
+
+        report = (
+            f"👑 *تحلیل جامع {symbol} - {timeframe}* 👑\n\n"
+            f"💰 قیمت لحظه‌ای: `{price:.6f}`\n"
+            f"📈 ۲۴ساعت (High/Low): `{high_24h:.4f}` / `{low_24h:.4f}`\n\n"
+            f"📊 *تکنیکال:*\n"
+            f"• RSI: `{rsi:.2f}`\n"
+            f"• MACD: `{'🟢 مثبت' if macd > sig else '🔴 منفی'}`\n"
+            f"• POC: `{poc:.4f}` | VAH: `{vah:.4f}` | VAL: `{val:.4f}`\n"
+            f"• فیبوناچی (0.618): `{fib_0618:.4f}`\n\n"
+            f"🧠 *پرایس‌اکشن & SMC:*\n"
+            f"• FVG: {fvg}\n"
+            f"• Order Block: {ob}\n"
+            f"• چرخه AMD: {amd}\n"
+            f"• نظر کلی: {sentiment}\n"
+            f"• جهت: {direction}\n\n"
+            f"🔥 *سیگنال پیشنهادی:*\n"
+            f"• Leverage: `{lev}`\n"
+            f"• Entry Price: `{entry:.6f}`\n"
+            f"• Stop Loss: `{sl:.6f}`\n"
+            f"• TP 1: `{tps[0]:.6f}`\n"
+            f"• TP 2: `{tps[1]:.6f}`\n"
+            f"• TP 3: `{tps[2]:.6f}`\n"
+            f"• TP 4: `{tps[3]:.6f}`"
+        )
+        return report, None
+    except Exception as e:
+        log.exception("analysis error")
+        return f"❌ خطا: {e}", None
+
+# ---------------- Handlers ----------------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("سلام! ارز مورد نظر خود را انتخاب کنید:", reply_markup=get_symbols_keyboard())
+    await message.answer(
+        "سلام! 👑 ارز مورد نظر رو انتخاب کن یا اسمش رو بنویس (مثلا BTC یا AKE):",
+        reply_markup=get_symbols_keyboard(),
+    )
 
-@dp.callback_query(lambda c: c.data.startswith('sym:'))
-async def process_symbol_select(callback_query: types.CallbackQuery):
-    symbol = callback_query.data.split('sym:')[1]
-    await callback_query.message.edit_text(f"ارز: <b>{symbol}</b>\nتایم‌فریم را انتخاب کنید:", parse_mode="HTML", reply_markup=get_timeframe_keyboard(symbol))
-    await callback_query.answer()
+@dp.message()
+async def handle_search(message: types.Message):
+    text = (message.text or "").strip().upper()
+    if "/" not in text:
+        text += "/USDT"
+    await message.answer(
+        f"جفت‌ارز `{text}` انتخاب شد. تایم‌فریم رو انتخاب کن:",
+        reply_markup=get_timeframe_keyboard(text),
+    )
 
-@dp.callback_query(lambda c: c.data.startswith('tf:'))
-async def process_timeframe_select(callback_query: types.CallbackQuery):
-    data_str = callback_query.data[3:]
-    symbol, tf = data_str.rsplit(':', 1)
-    user_last_tf[callback_query.from_user.id] = tf # ذخیره آخرین تایم‌فریم
-    await callback_query.message.edit_text("⏳ در حال تحلیل...")
-    result = await analyze_market(symbol, tf)
-    await callback_query.message.edit_text(result, parse_mode="HTML", reply_markup=get_timeframe_keyboard(symbol))
-    await callback_query.answer()
+@dp.callback_query()
+async def callback_handler(callback: types.CallbackQuery):
+    data = callback.data or ""
+    try:
+        if data == "back_symbols":
+            await callback.message.edit_text("انتخاب ارز:", reply_markup=get_symbols_keyboard())
+        elif data.startswith("sym:"):
+            symbol = data[len("sym:"):]
+            await callback.message.edit_text(
+                f"جفت‌ارز `{symbol}` انتخاب شد. تایم‌فریم رو انتخاب کن:",
+                reply_markup=get_timeframe_keyboard(symbol))
+        elif data.startswith("tf:"):
+            # tf:<tf>:<symbol>
+            _, rest = data.split(":", 1)
+            tf, symbol = rest.split(":", 1)
+            await callback.answer("⏳ در حال تحلیل...")
+            report, _ = await analyze_market(symbol, tf)
+            await callback.message.edit_text(report, reply_markup=get_timeframe_keyboard(symbol))
+            return
+        elif data.startswith("vp:"):
+            # vp:<tf>:<symbol>
+            _, rest = data.split(":", 1)
+            tf, symbol = rest.split(":", 1)
+            await callback.answer("⏳ در حال رسم چارت Volume Profile...")
+            await send_volume_profile(callback.message, symbol, tf)
+            return
+        await callback.answer()
+    except Exception as e:
+        log.exception("callback error")
+        try:
+            await callback.answer(f"❌ خطا: {e}", show_alert=True)
+        except Exception:
+            pass
 
-@dp.callback_query(lambda c: c.data == 'back_to_symbols')
-async def process_back(callback_query: types.CallbackQuery):
-    await callback_query.message.edit_text("ارز مورد نظر خود را انتخاب کنید:", reply_markup=get_symbols_keyboard())
-    await callback_query.answer()
+# ---------------- Web server (Render keepalive) ----------------
+async def health(request):
+    return web.json_response({"status": "ok", "bot": "running"})
 
-async def handle_ping(request): return web.Response(text="Bot is running!")
-
-async def start_web_server():
+async def start_web_server(port=10000):
     app = web.Application()
-    app.router.add_get("/", handle_ping)
-    runner = web.AppRunner(app); await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000)))
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
+    log.info(f"Web server started on 0.0.0.0:{port}")
+    return runner
 
 async def main():
-    bot = Bot(token=TOKEN)
-    await start_web_server()
-    await dp.start_polling(bot)
+    port = int(os.environ.get("PORT", 10000))
+    runner = await start_web_server(port)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await runner.cleanup()
+        await exchange.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
