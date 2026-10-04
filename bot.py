@@ -10,12 +10,14 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 logging.basicConfig(level=logging.INFO)
 
+# خواندن توکن از متغیرهای محیطی Render
 TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=TOKEN)
+# اصلاح پرانتز بسته نشده (Syntax Error)
+bot = Bot(token=TOKEN) 
 dp = Dispatcher()
 
-# صرافی Bybit
-exchange = ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
+# تغییر به صرافی MEXC
+exchange = ccxt.mexc({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
 
 def get_symbols_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
