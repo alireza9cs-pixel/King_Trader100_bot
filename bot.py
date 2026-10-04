@@ -23,23 +23,19 @@ from aiogram.types import (
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-
 logging.basicConfig(level=logging.INFO)
 
-
 # توکن ربات از متغیر محیطی خوانده می‌شود
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-
+GAPGPTMASKTOKENly7zegpwh8iX0X = os.getenv("GAPGPTMASKTOKENly7zegpwh8iX1X", "").strip()
 
 # صرافی MEXC برای قراردادهای فیوچرز
 exchange = ccxt.mexc({
     'enableRateLimit': True,
-    'timeout': 10000,
+    'timeout': 15000,
     'options': {
         'defaultType': 'swap'
     }
 })
-
 
 dp = Dispatcher()
 
@@ -68,7 +64,7 @@ def get_symbols_keyboard():
         ],
         [
             InlineKeyboardButton(
-                text="📡 سیگنال اتوماتیک",
+                text="📡 سیگنال اتوماتیک (Top 100)",
                 callback_data="auto_signal"
             )
         ]
@@ -987,20 +983,17 @@ async def analyze_market(
 
 
 # =========================================================
-# اسکن خودکار تمام بازارهای MEXC
+# اسکن سریع ۱۰۰ ارز پرحجم و پرنقدینگی MEXC
 # =========================================================
 
-AUTO_SIGNAL_TIMEFRAMES = (
-    "1m",
-    "5m",
-    "15m",
-    "1h",
-    "4h",
-    "1d"
-)
+# ۳ تایم‌فریم اصلی ورود
+AUTO_SIGNAL_TIMEFRAMES = ("15m", "1h", "4h")
 
+# همزمانی بالا برای اسکن سریع ۱۰۰ ارز بدون بلاک شدن
+AUTO_SCAN_CONCURRENCY = 12
 
-AUTO_SCAN_CONCURRENCY = 4
+# اسکن ۱۰۰ ارز برتر بازار
+TOP_VOL_COUNT = 100
 
 
 async def scan_one_market(
@@ -1008,97 +1001,56 @@ async def scan_one_market(
     timeframe: str,
     semaphore: asyncio.Semaphore
 ):
-    """
-    تحلیل یک نماد در یک تایم‌فریم
-    با استفاده از همان تابع analyze_market فعلی.
-    """
     try:
         async with semaphore:
-            report = await analyze_market(
-                symbol,
-                timeframe
-            )
+            report = await analyze_market(symbol, timeframe)
 
-        # فقط سیگنال‌های دارای شرایط ورود ارسال می‌شوند.
-        if (
-            "Strong Long" in report
-            or "Strong Short" in report
-        ):
+        if "Strong Long" in report or "Strong Short" in report:
             return symbol, timeframe, report
 
         return None
 
     except Exception as e:
-        logging.error(
-            f"Auto scan error for "
-            f"{symbol} on {timeframe}: {e}"
-        )
-
+        logging.error(f"Scan error for {symbol} ({timeframe}): {e}")
         return None
 
 
 async def scan_all_mexc_markets():
     """
-    تمام قراردادهای فعال USDT-M فیوچرز
-    در MEXC را در تایم‌فریم‌های ربات بررسی می‌کند.
+    دریافت ۱۰۰ ارز پرحجم فیوچرز MEXC و اسکن موازی
     """
-    markets = await exchange.load_markets()
+    # دریافت حجم ۲۴ ساعته تمام ارزها با ۱ درخواست پرسرعت
+    tickers = await exchange.fetch_tickers()
 
-    symbols = sorted({
-        market["symbol"]
-        for market in markets.values()
+    swap_tickers = []
+    for sym, ticker in tickers.items():
         if (
-            market.get("active", True) is not False
-            and market.get("swap") is True
-            and market.get("linear") is True
-            and market.get("quote") == "USDT"
-            and market.get("settle") == "USDT"
-        )
-    })
+            sym.endswith("/USDT:USDT")
+            and ticker.get("quoteVolume") is not None
+        ):
+            swap_tickers.append((sym, float(ticker["quoteVolume"])))
 
-    semaphore = asyncio.Semaphore(
-        AUTO_SCAN_CONCURRENCY
-    )
+    # مرتب‌سازی بر اساس بالاترین حجم معاملات ۲۴ ساعته
+    swap_tickers.sort(key=lambda x: x[1], reverse=True)
+    target_symbols = [x[0] for x in swap_tickers[:TOP_VOL_COUNT]]
+
+    semaphore = asyncio.Semaphore(AUTO_SCAN_CONCURRENCY)
 
     tasks = [
-        scan_one_market(
-            symbol,
-            timeframe,
-            semaphore
-        )
-        for symbol in symbols
-        for timeframe in AUTO_SIGNAL_TIMEFRAMES
+        scan_one_market(symbol, tf, semaphore)
+        for symbol in target_symbols
+        for tf in AUTO_SIGNAL_TIMEFRAMES
     ]
 
-    results = await asyncio.gather(
-        *tasks,
-        return_exceptions=True
-    )
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    signals = []
+    signals = [res for res in results if isinstance(res, tuple)]
+    signals.sort(key=lambda item: (item[0], item[1]))
 
-    for result in results:
-        if isinstance(result, tuple):
-            signals.append(result)
-
-    signals.sort(
-        key=lambda item: (
-            item[0],
-            item[1]
-        )
-    )
-
-    return len(symbols), signals
+    return len(target_symbols), signals
 
 
-def split_signal_reports(
-    reports,
-    max_length=3900
-):
-    """
-    گزارش‌ها را بدون عبور از محدودیت پیام تلگرام
-    در چند پیام تقسیم می‌کند.
-    """
+def split_signal_reports(reports, max_length=3900):
     chunks = []
     current_chunk = ""
 
@@ -1107,11 +1059,7 @@ def split_signal_reports(
             current_chunk = report
             continue
 
-        candidate = (
-            current_chunk
-            + "\n\n"
-            + report
-        )
+        candidate = current_chunk + "\n\n" + report
 
         if len(candidate) <= max_length:
             current_chunk = candidate
@@ -1130,289 +1078,4 @@ def split_signal_reports(
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
-        "سلام! به ربات تحلیل تکنیکال خوش آمدید.\n"
-        "ارز مورد نظر خود را برای تحلیل انتخاب کنید:",
-        reply_markup=get_symbols_keyboard()
-    )
-
-
-@dp.callback_query(
-    lambda c: c.data.startswith('sym:')
-)
-async def process_symbol_select(
-    callback_query: types.CallbackQuery
-):
-    symbol = callback_query.data.split(
-        'sym:'
-    )[1]
-
-    await callback_query.message.edit_text(
-        f"ارز انتخابی: <b>{symbol}</b>\n"
-        "لطفاً تایم‌فریم یا ابزار مورد نظر را انتخاب کنید:",
-        reply_markup=get_timeframe_keyboard(symbol)
-    )
-
-    await callback_query.answer()
-
-
-@dp.callback_query(
-    lambda c: c.data.startswith('tf:')
-)
-async def process_timeframe_select(
-    callback_query: types.CallbackQuery
-):
-    await callback_query.answer()
-
-    data_str = callback_query.data[3:]
-    symbol, tf = data_str.rsplit(':', 1)
-
-    await callback_query.message.edit_text(
-        "⏳ در حال دریافت داده‌ها و تحلیل هوشمند... "
-        "لطفاً شکیبا باشید."
-    )
-
-    result = await analyze_market(
-        symbol,
-        tf
-    )
-
-    await callback_query.message.edit_text(
-        result,
-        reply_markup=get_timeframe_keyboard(symbol)
-    )
-
-
-@dp.callback_query(
-    lambda c: c.data.startswith('vp:')
-)
-async def process_volume_profile(
-    callback_query: types.CallbackQuery
-):
-    await callback_query.answer(
-        "در حال آماده‌سازی تصویر..."
-    )
-
-    data_str = callback_query.data[3:]
-    symbol, tf = data_str.rsplit(':', 1)
-
-    wait_msg = await callback_query.message.answer(
-        "⏳ در حال پردازش داده‌های حجم "
-        "و تولید چارت..."
-    )
-
-    buf, caption = await generate_volume_profile_chart(
-        symbol,
-        tf
-    )
-
-    await wait_msg.delete()
-
-    if buf:
-        photo = BufferedInputFile(
-            buf.getvalue(),
-            filename=f"vp_{symbol.replace('/', '_')}.png"
-        )
-
-        await callback_query.message.answer_photo(
-            photo=photo,
-            caption=caption
-        )
-
-    else:
-        await callback_query.message.answer(
-            caption
-        )
-
-
-@dp.callback_query(
-    lambda c: c.data == 'back_to_symbols'
-)
-async def process_back(
-    callback_query: types.CallbackQuery
-):
-    await callback_query.answer()
-
-    await callback_query.message.edit_text(
-        "ارز مورد نظر خود را برای تحلیل انتخاب کنید:",
-        reply_markup=get_symbols_keyboard()
-    )
-
-
-# =========================================================
-# هندلر دکمه سیگنال اتوماتیک
-# =========================================================
-
-@dp.callback_query(
-    lambda c: c.data == "auto_signal"
-)
-async def process_auto_signal(
-    callback_query: types.CallbackQuery
-):
-    await callback_query.answer(
-        "اسکن بازار MEXC شروع شد..."
-    )
-
-    await callback_query.message.edit_text(
-        "⏳ در حال دریافت تمام قراردادهای فیوچرز "
-        "USDT صرافی MEXC...\n"
-        "سپس تمام تایم‌فریم‌های ربات بررسی می‌شوند.\n\n"
-        "این عملیات ممکن است چند دقیقه زمان ببرد."
-    )
-
-    try:
-        total_symbols, signals = (
-            await scan_all_mexc_markets()
-        )
-
-        if not signals:
-            await callback_query.message.edit_text(
-                f"✅ اسکن کامل شد.\n\n"
-                f"🔎 تعداد ارزهای بررسی‌شده: "
-                f"<code>{total_symbols}</code>\n"
-                f"⏱ تایم‌فریم‌ها: "
-                f"<code>"
-                f"{', '.join(AUTO_SIGNAL_TIMEFRAMES)}"
-                f"</code>\n\n"
-                f"⚪️ در حال حاضر هیچ‌کدام از ارزها "
-                f"شرایط ورود استراتژی فعلی را ندارند."
-            )
-
-            return
-
-        reports = [
-            report
-            for symbol, timeframe, report in signals
-        ]
-
-        summary = (
-            f"✅ اسکن خودکار MEXC کامل شد.\n\n"
-            f"🔎 ارزهای بررسی‌شده: "
-            f"<code>{total_symbols}</code>\n"
-            f"📊 تعداد سیگنال‌های معتبر: "
-            f"<code>{len(signals)}</code>\n"
-            f"⏱ تایم‌فریم‌ها: "
-            f"<code>"
-            f"{', '.join(AUTO_SIGNAL_TIMEFRAMES)}"
-            f"</code>\n\n"
-            f"📌 گزارش سیگنال‌ها:"
-        )
-
-        await callback_query.message.edit_text(
-            summary
-        )
-
-        report_chunks = split_signal_reports(
-            reports
-        )
-
-        for chunk in report_chunks:
-            await callback_query.message.answer(
-                chunk
-            )
-
-            await asyncio.sleep(0.2)
-
-    except Exception as e:
-        logging.error(
-            f"Auto signal scan failed: {e}"
-        )
-
-        await callback_query.message.edit_text(
-            "❌ هنگام اسکن خودکار بازار MEXC "
-            "خطایی رخ داد.\n\n"
-            "لطفاً چند لحظه بعد دوباره امتحان کنید."
-        )
-
-
-@dp.message()
-async def process_custom_symbol(
-    message: types.Message
-):
-    raw_text = message.text.strip().upper()
-
-    if "/" not in raw_text:
-        symbol = f"{raw_text}/USDT:USDT"
-    else:
-        symbol = raw_text
-
-    await message.answer(
-        f"ارز انتخابی: <b>{symbol}</b>\n"
-        "لطفاً تایم‌فریم یا ابزار مورد نظر را انتخاب کنید:",
-        reply_markup=get_timeframe_keyboard(symbol)
-    )
-
-
-async def handle_ping(request):
-    return web.Response(
-        text="Bot is awake and running perfectly!"
-    )
-
-
-async def start_web_server():
-    app = web.Application()
-
-    app.router.add_get(
-        "/",
-        handle_ping
-    )
-
-    app.router.add_get(
-        "/ping",
-        handle_ping
-    )
-
-    runner = web.AppRunner(app)
-
-    await runner.setup()
-
-    port = int(
-        os.environ.get(
-            "PORT",
-            10000
-        )
-    )
-
-    site = web.TCPSite(
-        runner,
-        "0.0.0.0",
-        port
-    )
-
-    await site.start()
-
-    logging.info(
-        f"Web server started on port {port}"
-    )
-
-
-async def main():
-    if not BOT_TOKEN:
-        logging.error(
-            "BOT_TOKEN is not set in environment variables! "
-            "لطفاً توکن ربات تلگرام را تنظیم کنید."
-        )
-
-        return
-
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(
-            parse_mode=ParseMode.HTML
-        )
-    )
-
-    await start_web_server()
-
-    logging.info(
-        "Starting Telegram Bot Polling..."
-    )
-
-    try:
-        await dp.start_polling(bot)
-
-    finally:
-        await exchange.close()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        "سلام! به ربات تحلیل تکنیکال 
