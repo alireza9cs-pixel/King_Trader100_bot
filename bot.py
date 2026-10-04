@@ -10,8 +10,9 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 logging.basicConfig(level=logging.INFO)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=GAPGPTMASKTOKEN3wzx2q8665xX1X
+# خواندن مستقیم توکن از رندر
+TOKEN = os.getenv("BOT_TOKEN")
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 exchange = ccxt.mexc({
@@ -140,7 +141,7 @@ async def analyze_market(symbol: str, timeframe: str = '1h'):
 async def cmd_start(message: types.Message):
     await message.answer(
         "سلام! به ربات King Trader خوش آمدید. 👑\n\n"
-        "یک ارز انتخاب کنید یا نماد هر ارزی را تایپ کنید (مثل `SOL` یا `PEPE`):",
+        "یک ارز انتخاب کنید یا نماد هر ارزی را تایپ کنید (مثل SOL یا PEPE):",
         reply_markup=get_symbols_keyboard()
     )
 
