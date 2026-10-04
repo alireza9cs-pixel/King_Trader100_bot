@@ -13,9 +13,9 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN تنظیم نشده است.")
+    raise RuntimeError("BOT_TOKEN is not set")
 
-bot = Bot(token=GAPGPTMASKTOKEN7qxtl1e7rcoX0X
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 exchange = ccxt.bingx({
@@ -79,7 +79,6 @@ def calculate_macd(df):
     ema_26 = close.ewm(span=26, adjust=False).mean()
     macd_line = ema_12 - ema_26
     signal_line = macd_line.ewm(span=9, adjust=False).mean()
-    hist = macd_line - signal_line
 
     m_val = float(macd_line.iloc[-1])
     s_val = float(signal_line.iloc[-1])
@@ -211,7 +210,6 @@ async def get_signals(symbol="BTC/USDT:USDT", timeframe="15m"):
         if len(df) < 30:
             return "داده کافی برای تحلیل دریافت نشد."
 
-        # RSI
         delta = df["close"].diff()
         gain = delta.where(delta > 0, 0).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -221,7 +219,6 @@ async def get_signals(symbol="BTC/USDT:USDT", timeframe="15m"):
         last_rsi = df["rsi"].iloc[-1]
         rsi_text = f"{float(last_rsi):.2f}" if not pd.isna(last_rsi) else "نامشخص"
 
-        # POC
         p_min = float(df["close"].min())
         p_max = float(df["close"].max())
         if p_min == p_max:
